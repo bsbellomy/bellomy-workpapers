@@ -271,23 +271,28 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
                   </div>
                 </div>
               ):Array.from({length:pageCount},(_,i)=>(
-                <div key={i} onClick={()=>setSelPage(i)} className="flex items-center gap-3 rounded cursor-pointer"
-                  style={{padding:'6px 8px',backgroundColor:selPage===i?C.ochreSoft:'transparent',border:`1px solid ${selPage===i?C.ochreLight:C.ruleSoft}`}}>
-                  {thumbs[i]&&<img src={thumbs[i]} style={{width:180,height:'auto',border:`1px solid ${C.rule}`,flexShrink:0}} alt=""/>}
-                  <div className="flex-1 min-w-0">
-                    <div className="mono" style={{fontSize:11,color:C.inkMuted}}>Page {i+1}</div>
-                    {assignments[i]?(
-                      <div className="flex items-center gap-1 mt-0.5">
-                        <span className="sans" style={{fontSize:11,color:C.ochreDeep,backgroundColor:C.ochreLight,padding:'1px 6px',borderRadius:3}}>
-                          {buttons.find(b=>b.id===assignments[i])?.label}
+                <div key={i} onClick={()=>setSelPage(i)} className="rounded cursor-pointer"
+                  style={{border:`2px solid ${selPage===i?C.ochre:C.ruleSoft}`,backgroundColor:selPage===i?C.ochreSoft:'transparent',overflow:'hidden'}}>
+                  {thumbs[i]
+                    ?<img src={thumbs[i]} style={{width:'100%',height:'auto',display:'block'}} alt=""/>
+                    :<div style={{width:'100%',aspectRatio:'8.5/11',backgroundColor:C.paperDeep}}/>
+                  }
+                  <div style={{padding:'4px 8px',borderTop:`1px solid ${selPage===i?C.ochreLight:C.ruleSoft}`,backgroundColor:selPage===i?C.ochreSoft:C.paperLight}}>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="mono" style={{fontSize:10,color:C.inkMuted}}>Pg {i+1}</span>
+                      {assignments[i]?(
+                        <div className="flex items-center gap-1">
+                          <span className="sans" style={{fontSize:10,color:C.ochreDeep,backgroundColor:C.ochreLight,padding:'1px 5px',borderRadius:3,fontWeight:600}}>
+                            {buttons.find(b=>b.id===assignments[i])?.label}
+                          </span>
+                          <button onClick={e=>{e.stopPropagation();setAssignments(p=>{const n={...p};delete n[i];return n})}} style={{color:C.inkFaint}}><X size={9}/></button>
+                        </div>
+                      ):(
+                        <span className="sans" style={{fontSize:10,color:selPage===i?C.ochre:C.inkFaint}}>
+                          {selPage===i?'← assign':'—'}
                         </span>
-                        <button onClick={e=>{e.stopPropagation();setAssignments(p=>{const n={...p};delete n[i];return n})}} style={{color:C.inkFaint}}><X size={10}/></button>
-                      </div>
-                    ):(
-                      <div className="sans" style={{fontSize:10,color:C.inkFaint,marginTop:2}}>
-                        {selPage===i?'← click a button to assign':'No bookmark'}
-                      </div>
-                    )}
+                      )}
+                    </div>
                   </div>
                 </div>
               ))}
