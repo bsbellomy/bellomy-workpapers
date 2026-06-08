@@ -26,6 +26,10 @@ const api = (window as unknown as { electronAPI?: {
   combineFiles:   (top:string,bot:string)=>Promise<{ok:boolean;error?:string}>
   scan:           ()=>Promise<boolean>
   pickFolder:     ()=>Promise<string|null>
+  deleteFile:     (p:string)=>Promise<{ok:boolean;error?:string}>
+  copyFile:       (p:string)=>Promise<{ok:boolean;error?:string;destPath?:string}>
+  savePdf:        (p:string,b:ArrayBuffer)=>Promise<{ok:boolean;error?:string}>
+  renameFolder:   (p:string,n:string)=>Promise<{ok:boolean;error?:string;newPath?:string}>
 }}).electronAPI
 
 // ── Colors ────────────────────────────────────────────────────────────────────
@@ -65,6 +69,431 @@ function visibleFiles(nodes:(DocFile|DocFolder)[], expanded:Set<string>): DocFil
 function flatFolders(tree:(DocFile|DocFolder)[], out:DocFolder[]=[]):DocFolder[] {
   for(const n of tree){if(n.type==='folder'){out.push(n);flatFolders(n.children,out)}}
   return out
+}
+
+// ── Edit File Modal ───────────────────────────────────────────────────────────
+
+interface BmBtn { id:string; label:string }
+
+function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onSaved:()=>void}){
+  const [thumbs,setThumbs]           = useState<string[]>([])
+  const [pageCount,setPageCount]     = useState(0)
+  const [loading,setLoading]         = useState(true)
+  const [loadPct,setLoadPct]         = useState(0)
+  const [selPage,setSelPage]         = useState(0)
+  const [assignments,setAssignments] = useState<Record<number,string>>({})
+  const [buttons,setButtons]         = useState<BmBtn[]>(()=>{
+    try{return JSON.parse(localStorage.getItem('bm-buttons')||'[]')}catch{return[]}
+  })
+  const [newLabel,setNewLabel]       = useState('')
+  const [saving,setSaving]           = useState(false)
+  const [progress,setProgress]       = useState(0)
+
+  useEffect(()=>{
+    let cancelled=false
+    async function load(){
+      setLoading(true)
+      const bytes=await api!.readPdf(file.path)
+      if(!bytes||cancelled) return
+      const pdfjsLib=await import('pdfjs-dist')
+      pdfjsLib.GlobalWorkerOptions.workerSrc=new URL('pdfjs-dist/build/pdf.worker.min.mjs',import.meta.url).toString()
+      const pdf=await pdfjsLib.getDocument({data:new Uint8Array(bytes)}).promise
+      setPageCount(pdf.numPages)
+      const t:string[]=[]
+      for(let i=1;i<=pdf.numPages;i++){
+        if(cancelled) return
+        const pg=await pdf.getPage(i)
+        const vp=pg.getViewport({scale:0.25})
+        const cv=document.createElement('canvas')
+        cv.width=vp.width; cv.height=vp.height
+        await pg.render({canvasContext:cv.getContext('2d')!,viewport:vp}).promise.catch(()=>{})
+        t.push(cv.toDataURL('image/jpeg',0.6))
+        setLoadPct(Math.round(i/pdf.numPages*100))
+      }
+      if(!cancelled){setThumbs(t);setLoading(false)}
+    }
+    load()
+    return()=>{cancelled=true}
+  },[file.path])
+
+  function saveButtons(btns:BmBtn[]){
+    setButtons(btns)
+    localStorage.setItem('bm-buttons',JSON.stringify(btns))
+  }
+
+  function addButton(){
+    if(!newLabel.trim()) return
+    saveButtons([...buttons,{id:crypto.randomUUID(),label:newLabel.trim()}])
+    setNewLabel('')
+  }
+
+  function moveBtn(i:number,dir:-1|1){
+    const j=i+dir
+    if(j<0||j>=buttons.length) return
+    const n=[...buttons];[n[i],n[j]]=[n[j],n[i]];saveButtons(n)
+  }
+
+  async function handleSave(){
+    if(!api) return
+    setSaving(true); setProgress(5)
+    try{
+      const {PDFDocument,PDFName,PDFString,PDFNumber}=await import('pdf-lib')
+      setProgress(15)
+      const bytes=await api.readPdf(file.path)
+      if(!bytes) throw new Error('Could not read file')
+      setProgress(25)
+      const srcDoc=await PDFDocument.load(bytes)
+      const n=srcDoc.getPageCount()
+
+      // Build page order: assigned pages first (in button order), then unassigned
+      const assigned:number[]=[]
+      for(const btn of buttons){
+        for(let i=0;i<n;i++) if(assignments[i]===btn.id&&!assigned.includes(i)) assigned.push(i)
+      }
+      const unassigned=Array.from({length:n},(_,i)=>i).filter(i=>!assigned.includes(i))
+      const order=[...assigned,...unassigned]
+
+      setProgress(40)
+      const newDoc=await PDFDocument.create()
+      const copied=await newDoc.copyPages(srcDoc,order)
+      copied.forEach(p=>newDoc.addPage(p))
+      setProgress(60)
+
+      // Map old page indices → new indices for bookmark placement
+      const newAssign:Record<number,string>={}
+      order.forEach((origIdx,newIdx)=>{ if(assignments[origIdx]) newAssign[newIdx]=assignments[origIdx] })
+
+      // Add PDF outline
+      const entries:{title:string;pageIdx:number}[]=[]
+      for(const btn of buttons){
+        for(let i=0;i<newDoc.getPageCount();i++){
+          if(newAssign[i]===btn.id) entries.push({title:btn.label,pageIdx:i})
+        }
+      }
+      if(entries.length>0){
+        const ctx=newDoc.context
+        const pages=newDoc.getPages()
+        const refs=entries.map(({title,pageIdx})=>
+          ctx.register(ctx.obj({Title:PDFString.of(title),Dest:ctx.obj([pages[pageIdx].ref,PDFName.of('Fit')])}))
+        )
+        for(let i=0;i<refs.length;i++){
+          const d=ctx.lookup(refs[i]) as any
+          if(i>0) d.set(PDFName.of('Prev'),refs[i-1])
+          if(i<refs.length-1) d.set(PDFName.of('Next'),refs[i+1])
+        }
+        const rootRef=ctx.register(ctx.obj({Type:PDFName.of('Outlines'),First:refs[0],Last:refs[refs.length-1],Count:PDFNumber.of(refs.length)}))
+        refs.forEach(r=>(ctx.lookup(r) as any).set(PDFName.of('Parent'),rootRef))
+        newDoc.catalog.set(PDFName.of('Outlines'),rootRef)
+      }
+
+      setProgress(80)
+      const saved=await newDoc.save()
+      setProgress(90)
+      const result=await api.savePdf(file.path,saved.buffer)
+      if(!result.ok) throw new Error(result.error)
+      setProgress(100)
+      setTimeout(()=>{onSaved();onClose()},600)
+    }catch(e){
+      alert('Save failed: '+String(e))
+      setSaving(false); setProgress(0)
+    }
+  }
+
+  return(
+    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{backgroundColor:'rgba(26,22,18,0.6)'}}>
+      <div className="flex flex-col rounded overflow-hidden" style={{width:'90vw',height:'88vh',backgroundColor:C.paperLight,boxShadow:'0 8px 40px rgba(26,22,18,0.3)'}}>
+        <div className="flex items-center justify-between px-5 py-3 flex-shrink-0" style={{backgroundColor:C.ink,color:C.paperLight}}>
+          <span className="serif" style={{fontSize:14,fontWeight:600}}>Edit File: {file.name}</span>
+          <button onClick={onClose} style={{color:C.inkFaint}}><X size={16}/></button>
+        </div>
+        <div className="flex flex-1 overflow-hidden">
+          {/* Pages */}
+          <div className="flex flex-col flex-1 overflow-hidden" style={{borderRight:`1px solid ${C.rule}`}}>
+            <div className="px-4 py-2 flex-shrink-0 flex items-center gap-3" style={{borderBottom:`1px solid ${C.ruleSoft}`,backgroundColor:C.paperDeep}}>
+              <span className="sans" style={{fontSize:11,color:C.inkMuted,letterSpacing:0.5,textTransform:'uppercase',fontWeight:600}}>Pages</span>
+              {loading&&<span className="sans" style={{fontSize:10,color:C.inkFaint}}>Loading thumbnails… {loadPct}%</span>}
+            </div>
+            <div className="flex-1 overflow-y-auto p-3" style={{display:'flex',flexDirection:'column',gap:4}}>
+              {loading?(
+                <div style={{textAlign:'center',padding:40,color:C.inkFaint,fontSize:12}}>
+                  <div style={{marginBottom:8}}>Rendering pages… {loadPct}%</div>
+                  <div style={{height:4,backgroundColor:C.ruleSoft,borderRadius:2,overflow:'hidden'}}>
+                    <div style={{height:'100%',backgroundColor:C.ochre,width:`${loadPct}%`,transition:'width 0.2s'}}/>
+                  </div>
+                </div>
+              ):Array.from({length:pageCount},(_,i)=>(
+                <div key={i} onClick={()=>setSelPage(i)} className="flex items-center gap-3 rounded cursor-pointer"
+                  style={{padding:'6px 8px',backgroundColor:selPage===i?C.ochreSoft:'transparent',border:`1px solid ${selPage===i?C.ochreLight:C.ruleSoft}`}}>
+                  {thumbs[i]&&<img src={thumbs[i]} style={{width:56,height:'auto',border:`1px solid ${C.rule}`,flexShrink:0}} alt=""/>}
+                  <div className="flex-1 min-w-0">
+                    <div className="mono" style={{fontSize:11,color:C.inkMuted}}>Page {i+1}</div>
+                    {assignments[i]?(
+                      <div className="flex items-center gap-1 mt-0.5">
+                        <span className="sans" style={{fontSize:11,color:C.ochreDeep,backgroundColor:C.ochreLight,padding:'1px 6px',borderRadius:3}}>
+                          {buttons.find(b=>b.id===assignments[i])?.label}
+                        </span>
+                        <button onClick={e=>{e.stopPropagation();setAssignments(p=>{const n={...p};delete n[i];return n})}} style={{color:C.inkFaint}}><X size={10}/></button>
+                      </div>
+                    ):(
+                      <div className="sans" style={{fontSize:10,color:C.inkFaint,marginTop:2}}>
+                        {selPage===i?'← click a button to assign':'No bookmark'}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+          {/* Bookmark buttons */}
+          <div className="flex flex-col flex-shrink-0" style={{width:264,backgroundColor:C.paper}}>
+            <div className="px-4 py-2 flex-shrink-0" style={{borderBottom:`1px solid ${C.ruleSoft}`,backgroundColor:C.paperDeep}}>
+              <span className="sans" style={{fontSize:11,color:C.inkMuted,letterSpacing:0.5,textTransform:'uppercase',fontWeight:600}}>Bookmark Buttons</span>
+            </div>
+            <div className="flex-1 overflow-y-auto p-3" style={{display:'flex',flexDirection:'column',gap:4}}>
+              {buttons.length===0&&<div style={{color:C.inkFaint,fontSize:11,textAlign:'center',padding:'16px 8px'}}>No buttons yet — add one below.</div>}
+              {buttons.map((btn,i)=>(
+                <div key={btn.id} className="flex items-center gap-1">
+                  <button onClick={()=>setAssignments(p=>({...p,[selPage]:btn.id}))}
+                    className="flex-1 text-left rounded px-3 py-2 sans"
+                    style={{fontSize:12,backgroundColor:C.ochreSoft,color:C.ochreDeep,border:`1px solid ${C.ochreLight}`,fontWeight:600}}>
+                    {btn.label}
+                  </button>
+                  <button onClick={()=>moveBtn(i,-1)} disabled={i===0} style={{color:C.inkFaint,fontSize:12,padding:'0 2px',opacity:i===0?0.3:1}}>↑</button>
+                  <button onClick={()=>moveBtn(i,1)} disabled={i===buttons.length-1} style={{color:C.inkFaint,fontSize:12,padding:'0 2px',opacity:i===buttons.length-1?0.3:1}}>↓</button>
+                  <button onClick={()=>saveButtons(buttons.filter((_,j)=>j!==i))} style={{color:'#B5443A',padding:'0 2px'}}><X size={11}/></button>
+                </div>
+              ))}
+            </div>
+            <div className="p-3 flex-shrink-0" style={{borderTop:`1px solid ${C.ruleSoft}`}}>
+              <div className="flex gap-1 mb-2">
+                <input type="text" placeholder="New button label…" value={newLabel}
+                  onChange={e=>setNewLabel(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')addButton()}}
+                  className="flex-1 outline-none sans px-2 py-1 rounded"
+                  style={{fontSize:12,backgroundColor:C.paper,border:`1px solid ${C.rule}`,color:C.ink}}/>
+                <button onClick={addButton} className="px-2 py-1 rounded sans" style={{fontSize:13,backgroundColor:C.ochre,color:C.paperLight,fontWeight:700}}>+</button>
+              </div>
+              <div style={{fontSize:10,color:C.inkFaint,lineHeight:1.4}}>Select a page, then click a button to assign. Button order = page sort order on save.</div>
+            </div>
+          </div>
+        </div>
+        <div className="px-5 py-3 flex items-center gap-3 flex-shrink-0" style={{backgroundColor:C.paperDeep,borderTop:`1px solid ${C.rule}`}}>
+          {saving?(
+            <div className="flex-1">
+              <div className="flex items-center justify-between mb-1">
+                <span className="sans" style={{fontSize:11,color:C.inkMuted}}>Saving…</span>
+                <span className="mono" style={{fontSize:11,color:C.inkMuted}}>{progress}%</span>
+              </div>
+              <div style={{height:6,backgroundColor:C.ruleSoft,borderRadius:3,overflow:'hidden'}}>
+                <div style={{height:'100%',backgroundColor:C.ochre,width:`${progress}%`,transition:'width 0.3s'}}/>
+              </div>
+            </div>
+          ):<div className="flex-1"/>}
+          <button onClick={onClose} disabled={saving} className="px-4 py-2 rounded sans" style={{fontSize:12,color:C.inkMuted,backgroundColor:C.paper,border:`1px solid ${C.rule}`}}>Cancel</button>
+          <button onClick={handleSave} disabled={saving||loading} className="px-4 py-2 rounded sans"
+            style={{fontSize:12,backgroundColor:C.ochre,color:C.paperLight,fontWeight:600,opacity:(saving||loading)?0.6:1}}>
+            Save & Close
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Edit Folder Modal ─────────────────────────────────────────────────────────
+
+function EditFolderModal({folder,docTree,onClose,onSaved}:{folder:DocFolder;docTree:(DocFile|DocFolder)[];onClose:()=>void;onSaved:()=>void}){
+  type Action='combine'|'move'|'rename'
+  const [action,setAction]     = useState<Action>('combine')
+  const [selected,setSelected] = useState<DocFile[]>([])
+  const [progress,setProgress] = useState(0)
+  const [saving,setSaving]     = useState(false)
+  const [outName,setOutName]   = useState(`${folder.name} Combined.pdf`)
+  const [destPath,setDestPath] = useState('')
+  const [renames,setRenames]   = useState<Record<string,string>>({})
+
+  const folderFiles=folder.children.filter((n):n is DocFile=>n.type==='file')
+  const available=folderFiles.filter(f=>!selected.some(s=>s.path===f.path))
+  const allFolders=flatFolders(docTree).filter(f=>f.path!==folder.path)
+
+  function toggle(file:DocFile){
+    if(selected.some(s=>s.path===file.path)){
+      setSelected(selected.filter(s=>s.path!==file.path))
+    } else {
+      setSelected([...selected,file])
+      if(action==='rename'&&!renames[file.path])
+        setRenames(p=>({...p,[file.path]:file.name.replace(/\.[^.]+$/,'')}))
+    }
+  }
+
+  function moveUp(i:number){if(i===0)return;const n=[...selected];[n[i-1],n[i]]=[n[i],n[i-1]];setSelected(n)}
+  function moveDown(i:number){if(i===selected.length-1)return;const n=[...selected];[n[i],n[i+1]]=[n[i+1],n[i]];setSelected(n)}
+
+  async function handleSave(){
+    if(!api||selected.length===0) return
+    setSaving(true); setProgress(5)
+    try{
+      if(action==='combine'){
+        const {PDFDocument}=await import('pdf-lib')
+        const merged=await PDFDocument.create()
+        for(let i=0;i<selected.length;i++){
+          setProgress(10+Math.round(i/selected.length*60))
+          const bytes=await api.readPdf(selected[i].path)
+          if(!bytes) continue
+          const doc=await PDFDocument.load(bytes)
+          const pages=await merged.copyPages(doc,doc.getPageIndices())
+          pages.forEach(p=>merged.addPage(p))
+        }
+        setProgress(75)
+        const saved=await merged.save()
+        const dest=folder.path+'\\'+outName
+        const r=await api.savePdf(dest,saved.buffer)
+        if(!r.ok) throw new Error(r.error)
+      } else if(action==='move'){
+        for(let i=0;i<selected.length;i++){
+          setProgress(10+Math.round(i/selected.length*85))
+          const r=await api.moveFile(selected[i].path,destPath)
+          if(!r.ok) throw new Error(r.error)
+        }
+      } else {
+        for(let i=0;i<selected.length;i++){
+          setProgress(10+Math.round(i/selected.length*85))
+          const newName=(renames[selected[i].path]||selected[i].name.replace(/\.[^.]+$/,''))+'.pdf'
+          if(newName!==selected[i].name){
+            const r=await api.renameFile(selected[i].path,newName)
+            if(!r.ok) throw new Error(r.error)
+          }
+        }
+      }
+      setProgress(100)
+      setTimeout(()=>{onSaved();onClose()},600)
+    }catch(e){
+      alert('Operation failed: '+String(e))
+      setSaving(false); setProgress(0)
+    }
+  }
+
+  const canSave=selected.length>0&&!saving&&(action!=='move'||!!destPath)
+
+  return(
+    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{backgroundColor:'rgba(26,22,18,0.6)'}}>
+      <div className="flex flex-col rounded overflow-hidden" style={{width:'82vw',height:'82vh',backgroundColor:C.paperLight,boxShadow:'0 8px 40px rgba(26,22,18,0.3)'}}>
+        <div className="flex items-center justify-between px-5 py-3 flex-shrink-0" style={{backgroundColor:C.ink,color:C.paperLight}}>
+          <span className="serif" style={{fontSize:14,fontWeight:600}}>Edit Folder: {folder.name}</span>
+          <button onClick={onClose} style={{color:C.inkFaint}}><X size={16}/></button>
+        </div>
+        {/* Tabs */}
+        <div className="flex flex-shrink-0" style={{borderBottom:`1px solid ${C.rule}`,backgroundColor:C.paperDeep}}>
+          {(['combine','move','rename'] as Action[]).map(a=>(
+            <button key={a} onClick={()=>{setAction(a);setSelected([])}}
+              className="px-5 py-2.5 sans"
+              style={{fontSize:12,fontWeight:600,color:action===a?C.ochreDeep:C.inkMuted,borderBottom:action===a?`2px solid ${C.ochre}`:'2px solid transparent',textTransform:'capitalize'}}>
+              {a==='combine'?'Combine Files':a==='move'?'Move Files':'Rename Files'}
+            </button>
+          ))}
+        </div>
+        {/* Body */}
+        <div className="flex flex-1 overflow-hidden p-4 gap-4">
+          {/* Available */}
+          <div className="flex flex-col flex-1 overflow-hidden rounded" style={{border:`1px solid ${C.rule}`}}>
+            <div className="px-3 py-2 flex-shrink-0" style={{backgroundColor:C.paperDeep,borderBottom:`1px solid ${C.ruleSoft}`}}>
+              <span className="sans" style={{fontSize:10,letterSpacing:0.8,textTransform:'uppercase',color:C.inkMuted,fontWeight:600}}>Available ({available.length})</span>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              {available.map(f=>(
+                <div key={f.path} className="flex items-center gap-2 px-3 py-2 cursor-pointer row-hover" onClick={()=>toggle(f)}>
+                  <FileText size={12} style={{color:C.inkFaint,flexShrink:0}}/>
+                  <span className="sans flex-1 truncate" style={{fontSize:12,color:C.ink}}>{f.name}</span>
+                  <span style={{color:C.ochre,fontSize:14}}>→</span>
+                </div>
+              ))}
+              {available.length===0&&<div style={{color:C.inkFaint,fontSize:11,padding:'12px 16px'}}>All files selected</div>}
+            </div>
+          </div>
+          {/* Selected */}
+          <div className="flex flex-col flex-1 overflow-hidden rounded" style={{border:`1px solid ${C.ochreLight}`}}>
+            <div className="px-3 py-2 flex-shrink-0" style={{backgroundColor:C.ochreSoft,borderBottom:`1px solid ${C.ochreLight}`}}>
+              <span className="sans" style={{fontSize:10,letterSpacing:0.8,textTransform:'uppercase',color:C.ochreDeep,fontWeight:600}}>Selected ({selected.length})</span>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              {selected.map((f,i)=>(
+                <div key={f.path} className="flex items-center gap-2 px-3 py-2">
+                  {action==='rename'?(
+                    <>
+                      <FileText size={12} style={{color:C.ochre,flexShrink:0}}/>
+                      <input type="text" value={renames[f.path]??f.name.replace(/\.[^.]+$/,'')}
+                        onChange={e=>setRenames(p=>({...p,[f.path]:e.target.value}))}
+                        className="flex-1 outline-none sans px-1 rounded"
+                        style={{fontSize:11,color:C.ink,border:`1px solid ${C.rule}`,backgroundColor:C.paper}}/>
+                      <span style={{color:C.inkFaint,fontSize:10,flexShrink:0}}>.pdf</span>
+                    </>
+                  ):(
+                    <>
+                      <span className="mono flex-shrink-0" style={{fontSize:10,color:C.inkFaint,width:16,textAlign:'right'}}>{i+1}</span>
+                      <FileText size={12} style={{color:C.ochre,flexShrink:0}}/>
+                      <span className="sans flex-1 truncate" style={{fontSize:12,color:C.ink}}>{f.name}</span>
+                    </>
+                  )}
+                  <div className="flex gap-0.5 flex-shrink-0">
+                    <button onClick={()=>moveUp(i)} disabled={i===0} style={{color:C.inkFaint,fontSize:12,padding:'0 2px',opacity:i===0?0.3:1}}>↑</button>
+                    <button onClick={()=>moveDown(i)} disabled={i===selected.length-1} style={{color:C.inkFaint,fontSize:12,padding:'0 2px',opacity:i===selected.length-1?0.3:1}}>↓</button>
+                    <button onClick={()=>toggle(f)} style={{color:'#B5443A',padding:'0 2px'}}><X size={11}/></button>
+                  </div>
+                </div>
+              ))}
+              {selected.length===0&&<div style={{color:C.inkFaint,fontSize:11,padding:'12px 16px'}}>Click files on the left to add them</div>}
+            </div>
+          </div>
+          {/* Options */}
+          <div className="flex flex-col flex-shrink-0 gap-3" style={{width:210}}>
+            {action==='combine'&&(
+              <div className="p-3 rounded" style={{border:`1px solid ${C.rule}`,backgroundColor:C.paper}}>
+                <div className="sans mb-1" style={{fontSize:11,color:C.inkMuted,fontWeight:600}}>Output Filename</div>
+                <input type="text" value={outName} onChange={e=>setOutName(e.target.value)}
+                  className="w-full outline-none sans px-2 py-1 rounded"
+                  style={{fontSize:11,color:C.ink,border:`1px solid ${C.rule}`,backgroundColor:C.paperDeep}}/>
+                <div style={{fontSize:10,color:C.inkFaint,marginTop:4}}>Created in this folder</div>
+              </div>
+            )}
+            {action==='move'&&(
+              <div className="p-3 rounded" style={{border:`1px solid ${C.rule}`,backgroundColor:C.paper}}>
+                <div className="sans mb-1" style={{fontSize:11,color:C.inkMuted,fontWeight:600}}>Destination Folder</div>
+                <select value={destPath} onChange={e=>setDestPath(e.target.value)}
+                  className="w-full outline-none sans px-2 py-1 rounded"
+                  style={{fontSize:11,color:C.ink,border:`1px solid ${C.rule}`,backgroundColor:C.paperDeep}}>
+                  <option value="">Select a folder…</option>
+                  {allFolders.map(f=><option key={f.path} value={f.path}>{f.name}</option>)}
+                </select>
+              </div>
+            )}
+            {action==='rename'&&(
+              <div className="p-3 rounded" style={{border:`1px solid ${C.rule}`,backgroundColor:C.paper}}>
+                <div style={{fontSize:11,color:C.inkMuted,lineHeight:1.5}}>Edit the name for each selected file. The <strong>.pdf</strong> extension is added automatically.</div>
+              </div>
+            )}
+          </div>
+        </div>
+        {/* Footer */}
+        <div className="px-5 py-3 flex items-center gap-3 flex-shrink-0" style={{backgroundColor:C.paperDeep,borderTop:`1px solid ${C.rule}`}}>
+          {saving?(
+            <div className="flex-1">
+              <div className="flex items-center justify-between mb-1">
+                <span className="sans" style={{fontSize:11,color:C.inkMuted}}>Working…</span>
+                <span className="mono" style={{fontSize:11,color:C.inkMuted}}>{progress}%</span>
+              </div>
+              <div style={{height:6,backgroundColor:C.ruleSoft,borderRadius:3,overflow:'hidden'}}>
+                <div style={{height:'100%',backgroundColor:C.ochre,width:`${progress}%`,transition:'width 0.3s'}}/>
+              </div>
+            </div>
+          ):<div className="flex-1"/>}
+          <button onClick={onClose} disabled={saving} className="px-4 py-2 rounded sans" style={{fontSize:12,color:C.inkMuted,backgroundColor:C.paper,border:`1px solid ${C.rule}`}}>Cancel</button>
+          <button onClick={handleSave} disabled={!canSave} className="px-4 py-2 rounded sans"
+            style={{fontSize:12,backgroundColor:C.ochre,color:C.paperLight,fontWeight:600,opacity:canSave?1:0.5}}>
+            Save & Close
+          </button>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 // ── PDF Viewer ────────────────────────────────────────────────────────────────
@@ -279,11 +708,16 @@ export default function App(){
   const [rightTab,setRightTab]             = useState<'notes'|'xref'|'signoff'>('notes')
   const [showCalculator,setShowCalculator] = useState(false)
   const [search,setSearch]                 = useState('')
+  const clientSearchRef                    = useRef<HTMLInputElement>(null)
   const [dragSrc,setDragSrc]               = useState<string|null>(null)
   const [dragOver,setDragOver]             = useState<string|null>(null)
   const [ctxMenu,setCtxMenu]               = useState<{x:number;y:number;file:DocFile}|null>(null)
+  const [ctxFolder,setCtxFolder]           = useState<{x:number;y:number;folder:DocFolder}|null>(null)
   const [renaming,setRenaming]             = useState<{file:DocFile;value:string}|null>(null)
   const [moveDrawer,setMoveDrawer]         = useState<DocFile[]|null>(null)
+  const [editFileModal,setEditFileModal]   = useState<DocFile|null>(null)
+  const [editFolderModal,setEditFolderModal] = useState<DocFolder|null>(null)
+  const [clipboard,setClipboard]           = useState<DocFile|null>(null)
   const [multiSelect,setMultiSelect]       = useState<DocFile[]>([])
   // bookmarks: undefined = not checked, 'loading' = in progress, 'none' = no bookmarks, Bookmark[] = loaded
   const [fileBookmarks,setFileBookmarks]   = useState<Record<string,Bookmark[]|'loading'|'none'>>({})
@@ -340,17 +774,24 @@ export default function App(){
   // Keyboard shortcuts
   useEffect(()=>{
     function onKey(e:KeyboardEvent){
-      if(e.target instanceof HTMLInputElement) return
+      if(e.target instanceof HTMLInputElement||e.target instanceof HTMLTextAreaElement) return
       if(e.key==='ArrowRight'||e.key==='PageDown') setCurrentPage(p=>Math.min(pageCount,p+1))
       if(e.key==='ArrowLeft' ||e.key==='PageUp')   setCurrentPage(p=>Math.max(1,p-1))
+      if((e.ctrlKey||e.metaKey)&&e.key==='c'&&selectedFile){
+        setClipboard(selectedFile); e.preventDefault()
+      }
+      if((e.ctrlKey||e.metaKey)&&e.key==='v'&&clipboard&&api){
+        e.preventDefault()
+        api.copyFile(clipboard.path).then(r=>{ if(r.ok) refreshDocs(500); else alert('Copy failed: '+(r.error??'')) })
+      }
     }
     window.addEventListener('keydown',onKey)
     return()=>window.removeEventListener('keydown',onKey)
-  },[pageCount])
+  },[pageCount,selectedFile,clipboard,api,refreshDocs])
 
-  // Close context menu on click
+  // Close context menus on click
   useEffect(()=>{
-    const close=()=>setCtxMenu(null)
+    const close=()=>{ setCtxMenu(null); setCtxFolder(null) }
     window.addEventListener('click',close)
     return()=>window.removeEventListener('click',close)
   },[])
@@ -530,6 +971,7 @@ export default function App(){
               className="flex items-center gap-1.5 cursor-pointer"
               style={{paddingLeft:10+depth*14,paddingTop:6,paddingBottom:6,paddingRight:8,color:isDrop?C.ochreDeep:C.inkMuted,backgroundColor:isDrop?'#F2DFA8':'transparent',borderLeft:isDrop?`4px solid ${C.ochre}`:'4px solid transparent',borderRadius:2,transition:'background-color 0.1s'}}
               onClick={()=>toggleFolder(node.path)}
+              onContextMenu={e=>{e.preventDefault();e.stopPropagation();setCtxFolder({x:e.clientX,y:e.clientY,folder:node})}}
               onDragOver={e=>{e.preventDefault();e.stopPropagation();setDragOver(node.path)}}
               onDragLeave={e=>{e.stopPropagation();setDragOver(null)}}
               onDrop={e=>{e.preventDefault();e.stopPropagation();handleDrop(node.path)}}
@@ -673,17 +1115,24 @@ export default function App(){
         {leftOpen?(
           <div className="flex flex-col flex-shrink-0" style={{width:240,backgroundColor:C.paperLight,borderRight:`1px solid ${C.rule}`}}>
             <div className="px-3 py-2 flex items-center gap-1.5" style={{borderBottom:`1px solid ${C.ruleSoft}`}}>
-              {selectedClient?(
-                <button onClick={()=>{setSelectedClient(null);setSelectedFile(null);setDocTree([]);setExpandedFolders(new Set())}} className="flex items-center gap-1.5 flex-1 min-w-0" style={{color:C.inkMuted}}>
-                  <ArrowLeft size={11}/>
-                  <span className="serif truncate" style={{fontSize:12,fontWeight:600,color:C.ink}}>{selectedClient}</span>
-                </button>
-              ):(
-                <div className="flex-1 flex items-center gap-1.5 px-2 py-1 rounded" style={{backgroundColor:C.paper,border:`1px solid ${C.rule}`}}>
-                  <Search size={11} style={{color:C.inkMuted}}/>
-                  <input type="text" placeholder="Search clients…" value={search} onChange={e=>setSearch(e.target.value)} className="flex-1 outline-none text-[11px] bg-transparent min-w-0 sans" style={{color:C.ink}}/>
-                </div>
-              )}
+              <div className="flex-1 flex items-center gap-1.5 px-2 py-1 rounded" style={{backgroundColor:C.paper,border:`1px solid ${C.rule}`}}>
+                <Search size={11} style={{color:C.inkMuted,flexShrink:0}}/>
+                <input
+                  ref={clientSearchRef}
+                  type="text"
+                  placeholder="Search clients…"
+                  value={selectedClient&&!search ? selectedClient : search}
+                  onFocus={()=>{
+                    if(selectedClient){
+                      setSearch('')
+                      setSelectedClient(null);setSelectedFile(null);setDocTree([]);setExpandedFolders(new Set())
+                    }
+                  }}
+                  onChange={e=>setSearch(e.target.value)}
+                  className="flex-1 outline-none text-[11px] bg-transparent min-w-0 sans"
+                  style={{color:C.ink,fontWeight:selectedClient&&!search?600:400}}
+                />
+              </div>
               <button onClick={()=>setLeftOpen(false)} className="p-1 row-hover rounded" style={{color:C.inkMuted,flexShrink:0}}><PanelLeftClose size={13}/></button>
             </div>
 
@@ -698,7 +1147,8 @@ export default function App(){
                   {filteredClients.map(name=>{
                     const isSel=selectedClient===name
                     return(
-                      <div key={name} className="flex items-center gap-2 px-3 py-2 cursor-pointer relative row-hover" style={{backgroundColor:isSel?C.ochreSoft:'transparent'}} onClick={()=>setSelectedClient(name)}>
+                      <div key={name} className="flex items-center gap-2 px-3 py-2 cursor-pointer relative row-hover" style={{backgroundColor:isSel?C.ochreSoft:'transparent'}} onClick={()=>{setSelectedClient(name);setSearch('')}}>
+
                         {isSel&&<div className="absolute left-0 top-0 bottom-0" style={{width:2,backgroundColor:C.ochre}}/>}
                         <div style={{width:22,height:22,backgroundColor:isSel?C.ochre:C.paper,border:`1px solid ${isSel?C.ochre:C.rule}`,borderRadius:2,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
                           <span className="serif" style={{fontSize:11,fontWeight:600,color:isSel?C.ink:C.inkSoft}}>{name[0].toUpperCase()}</span>
@@ -1009,16 +1459,47 @@ export default function App(){
               </div>
             </div>
             {!isBulk&&(
-              <button className="w-full text-left px-4 py-2.5 sans row-hover flex items-center gap-2" style={{fontSize:13,color:C.ink}} onClick={()=>{setRenaming({file:ctxMenu.file,value:ctxMenu.file.name.replace(/\.[^.]+$/,'')});setCtxMenu(null)}}>
-                ✏️ <span>Rename</span>
-              </button>
+              <>
+                <button className="w-full text-left px-4 py-2.5 sans row-hover flex items-center gap-2" style={{fontSize:13,color:C.ink}} onClick={()=>{setEditFileModal(ctxMenu.file);setCtxMenu(null)}}>
+                  📄 <span>Edit File…</span>
+                </button>
+                <button className="w-full text-left px-4 py-2.5 sans row-hover flex items-center gap-2" style={{fontSize:13,color:C.ink,borderTop:`1px solid ${C.ruleSoft}`}} onClick={()=>{setRenaming({file:ctxMenu.file,value:ctxMenu.file.name.replace(/\.[^.]+$/,'')});setCtxMenu(null)}}>
+                  ✏️ <span>Rename</span>
+                </button>
+              </>
             )}
-            <button className="w-full text-left px-4 py-2.5 sans row-hover flex items-center gap-2" style={{fontSize:13,color:C.ink,borderTop:isBulk?'none':`1px solid ${C.ruleSoft}`}} onClick={()=>{setMoveDrawer(affectedFiles);setCtxMenu(null)}}>
+            <button className="w-full text-left px-4 py-2.5 sans row-hover flex items-center gap-2" style={{fontSize:13,color:C.ink,borderTop:`1px solid ${C.ruleSoft}`}} onClick={()=>{setMoveDrawer(affectedFiles);setCtxMenu(null)}}>
               📁 <span>{isBulk?`Move ${affectedFiles.length} files to Another Drawer`:'Move to Another Drawer'}</span>
             </button>
+            {!isBulk&&(
+              <button className="w-full text-left px-4 py-2.5 sans row-hover flex items-center gap-2" style={{fontSize:13,color:'#B5443A',borderTop:`1px solid ${C.ruleSoft}`}}
+                onClick={()=>{
+                  if(!confirm(`Delete "${ctxMenu.file.name}"? This cannot be undone.`)) return
+                  api?.deleteFile(ctxMenu.file.path).then(r=>{
+                    if(!r.ok) alert('Delete failed: '+(r.error??''))
+                    else{ if(selectedFile?.path===ctxMenu.file.path) setSelectedFile(null); refreshDocs(300) }
+                  })
+                  setCtxMenu(null)
+                }}>
+                🗑️ <span>Delete</span>
+              </button>
+            )}
           </div>
         )
       })()}
+
+      {/* ── Folder context menu ── */}
+      {ctxFolder&&(
+        <div className="fixed z-50 rounded overflow-hidden" style={{left:ctxFolder.x,top:ctxFolder.y,backgroundColor:'#FEFCF7',border:`1px solid ${C.rule}`,boxShadow:'0 4px 16px rgba(26,22,18,0.15)',minWidth:200}} onClick={e=>e.stopPropagation()}>
+          <div className="px-3 py-1.5" style={{borderBottom:`1px solid ${C.ruleSoft}`,backgroundColor:C.paperDeep}}>
+            <div className="truncate sans" style={{fontSize:11,color:C.inkMuted}}>{ctxFolder.folder.name}</div>
+          </div>
+          <button className="w-full text-left px-4 py-2.5 sans row-hover flex items-center gap-2" style={{fontSize:13,color:C.ink}}
+            onClick={()=>{setEditFolderModal(ctxFolder.folder);setCtxFolder(null)}}>
+            🗂️ <span>Edit Folder…</span>
+          </button>
+        </div>
+      )}
 
       {/* ── Move-to-drawer modal ── */}
       {moveDrawer&&(
@@ -1040,6 +1521,16 @@ export default function App(){
             refreshDocs(800)
           }}
         />
+      )}
+
+      {/* ── Edit File modal ── */}
+      {editFileModal&&(
+        <EditFileModal file={editFileModal} onClose={()=>setEditFileModal(null)} onSaved={()=>refreshDocs(800)}/>
+      )}
+
+      {/* ── Edit Folder modal ── */}
+      {editFolderModal&&(
+        <EditFolderModal folder={editFolderModal} docTree={docTree} onClose={()=>setEditFolderModal(null)} onSaved={()=>refreshDocs(800)}/>
       )}
     </div>
   )

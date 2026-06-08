@@ -217,3 +217,62 @@ ipcMain.handle('fs:pickFolder', async () => {
   const result = await dialog.showOpenDialog({ properties: ['openDirectory'] })
   return result.canceled ? null : result.filePaths[0]
 })
+
+// ── Delete file ───────────────────────────────────────────────────────────────
+ipcMain.handle('fs:deleteFile', async (_e, filePath: string) => {
+  const { execFile } = await import('child_process')
+  return new Promise(resolve => {
+    const script = `Remove-Item -LiteralPath '${filePath.replace(/'/g,"''")}' -Force`
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], (err, _out, stderr) => {
+      if (err || stderr.trim()) { resolve({ ok: false, error: stderr.trim() || String(err) }); return }
+      try { const ann = annFile(filePath); if (fs.existsSync(ann)) fs.unlinkSync(ann) } catch {}
+      resolve({ ok: true })
+    })
+  })
+})
+
+// ── Copy file (creates "(Copy N)" sibling) ────────────────────────────────────
+ipcMain.handle('fs:copyFile', async (_e, srcPath: string) => {
+  const { execFile } = await import('child_process')
+  const dir  = path.dirname(srcPath)
+  const ext  = path.extname(srcPath)
+  const base = path.basename(srcPath, ext)
+  let n = 2
+  let destPath = path.join(dir, `${base} (Copy ${n})${ext}`)
+  while (fs.existsSync(destPath)) { n++; destPath = path.join(dir, `${base} (Copy ${n})${ext}`) }
+  return new Promise(resolve => {
+    const script = `Copy-Item -LiteralPath '${srcPath.replace(/'/g,"''")}' -Destination '${destPath.replace(/'/g,"''")}' -Force`
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], (err, _out, stderr) => {
+      if (err || stderr.trim()) { resolve({ ok: false, error: stderr.trim() || String(err) }); return }
+      resolve({ ok: true, destPath })
+    })
+  })
+})
+
+// ── Save PDF bytes back to disk ───────────────────────────────────────────────
+ipcMain.handle('fs:savePdf', async (_e, filePath: string, bytes: ArrayBuffer) => {
+  try {
+    fs.writeFileSync(filePath, Buffer.from(bytes))
+    return { ok: true }
+  } catch (e: unknown) {
+    return { ok: false, error: String(e) }
+  }
+})
+
+// ── Rename folder ─────────────────────────────────────────────────────────────
+ipcMain.handle('fs:renameFolder', async (_e, folderPath: string, newName: string) => {
+  const { execFile } = await import('child_process')
+  const parent  = path.dirname(folderPath)
+  const newPath = path.join(parent, newName)
+  if (fs.existsSync(newPath)) return { ok: false, error: 'A folder with that name already exists.' }
+  return new Promise(resolve => {
+    execFile('powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command',
+       `Rename-Item -LiteralPath '${folderPath.replace(/'/g,"''")}' -NewName '${newName.replace(/'/g,"''")}'`],
+      (err, _out, stderr) => {
+        if (err || stderr.trim()) { resolve({ ok: false, error: stderr.trim() || String(err) }); return }
+        resolve({ ok: true, newPath })
+      }
+    )
+  })
+})
