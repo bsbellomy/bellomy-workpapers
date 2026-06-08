@@ -257,7 +257,7 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
               <span className="sans" style={{fontSize:11,color:C.inkMuted,letterSpacing:0.5,textTransform:'uppercase',fontWeight:600}}>Pages</span>
               {loading&&<span className="sans" style={{fontSize:10,color:C.inkFaint}}>Loading thumbnails… {loadPct}%</span>}
             </div>
-            <div className="flex-1 overflow-y-auto p-3" style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:8,alignContent:'start'}}>
+            <div className="flex-1 overflow-y-auto p-3" style={{display:'flex',flexDirection:'column',gap:8}}>
               {loadError?(
                 <div style={{gridColumn:'1/-1',padding:24,color:'#B5443A',fontSize:12,lineHeight:1.6}}>
                   <div style={{fontWeight:600,marginBottom:6}}>Failed to load PDF</div>
@@ -272,7 +272,7 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
                 </div>
               ):Array.from({length:pageCount},(_,i)=>(
                 <div key={i} onClick={()=>setSelPage(i)} className="rounded cursor-pointer"
-                  style={{border:`2px solid ${selPage===i?C.ochre:C.ruleSoft}`,backgroundColor:selPage===i?C.ochreSoft:'transparent',overflow:'hidden'}}>
+                  style={{border:`2px solid ${selPage===i?C.ochre:C.ruleSoft}`,backgroundColor:selPage===i?C.ochreSoft:'transparent',overflow:'hidden',flexShrink:0}}>
                   {thumbs[i]
                     ?<img src={thumbs[i]} style={{width:'100%',height:'auto',display:'block'}} alt=""/>
                     :<div style={{width:'100%',aspectRatio:'8.5/11',backgroundColor:C.paperDeep}}/>
