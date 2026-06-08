@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
+using NAPS2.Images;
 using NAPS2.Images.Gdi;
 using NAPS2.Pdf;
 using NAPS2.Scan;
