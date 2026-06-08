@@ -15,4 +15,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   copyFile:        (p:string) => ipcRenderer.invoke('fs:copyFile', p),
   savePdf:         (p:string, b:ArrayBuffer) => ipcRenderer.invoke('fs:savePdf', p, b),
   renameFolder:    (p:string, n:string) => ipcRenderer.invoke('fs:renameFolder', p, n),
+  minimizeWindow:  () => ipcRenderer.send('win:minimize'),
+  maximizeWindow:  () => ipcRenderer.send('win:maximize'),
+  closeWindow:     () => ipcRenderer.send('win:close'),
 })

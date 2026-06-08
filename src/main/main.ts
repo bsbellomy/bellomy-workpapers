@@ -61,9 +61,12 @@ function createWindow() {
   if (isDev) {
     win.loadURL('http://localhost:5173')
   } else {
-    // In production __dirname is dist/main/main/ so renderer is two levels up
     win.loadFile(path.join(app.getAppPath(), 'dist', 'renderer', 'index.html'))
   }
+
+  ipcMain.on('win:minimize', () => win.minimize())
+  ipcMain.on('win:maximize', () => win.isMaximized() ? win.unmaximize() : win.maximize())
+  ipcMain.on('win:close',    () => win.close())
 }
 
 app.whenReady().then(createWindow)

@@ -30,6 +30,9 @@ const api = (window as unknown as { electronAPI?: {
   copyFile:       (p:string)=>Promise<{ok:boolean;error?:string;destPath?:string}>
   savePdf:        (p:string,b:ArrayBuffer)=>Promise<{ok:boolean;error?:string}>
   renameFolder:   (p:string,n:string)=>Promise<{ok:boolean;error?:string;newPath?:string}>
+  minimizeWindow: ()=>void
+  maximizeWindow: ()=>void
+  closeWindow:    ()=>void
 }}).electronAPI
 
 // ── Colors ────────────────────────────────────────────────────────────────────
@@ -103,11 +106,11 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
       for(let i=1;i<=pdf.numPages;i++){
         if(cancelled) return
         const pg=await pdf.getPage(i)
-        const vp=pg.getViewport({scale:0.25})
+        const vp=pg.getViewport({scale:0.6})
         const cv=document.createElement('canvas')
         cv.width=vp.width; cv.height=vp.height
         await pg.render({canvasContext:cv.getContext('2d')!,viewport:vp}).promise.catch(()=>{})
-        t.push(cv.toDataURL('image/jpeg',0.6))
+        t.push(cv.toDataURL('image/jpeg',0.85))
         setLoadPct(Math.round(i/pdf.numPages*100))
       }
       if(!cancelled){setThumbs(t);setLoading(false)}
@@ -189,7 +192,8 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
       setProgress(80)
       const saved=await newDoc.save()
       setProgress(90)
-      const result=await api.savePdf(file.path,saved.buffer)
+      const buf=saved.buffer.slice(saved.byteOffset,saved.byteOffset+saved.byteLength)
+      const result=await api.savePdf(file.path,buf)
       if(!result.ok) throw new Error(result.error)
       setProgress(100)
       setTimeout(()=>{onSaved();onClose()},600)
@@ -346,7 +350,7 @@ function EditFolderModal({folder,docTree,onClose,onSaved}:{folder:DocFolder;docT
         setProgress(75)
         const saved=await merged.save()
         const dest=folder.path+'\\'+outName
-        const r=await api.savePdf(dest,saved.buffer)
+        const r=await api.savePdf(dest,saved.buffer.slice(saved.byteOffset,saved.byteOffset+saved.byteLength))
         if(!r.ok) throw new Error(r.error)
       } else if(action==='move'){
         for(let i=0;i<selected.length;i++){
@@ -530,20 +534,19 @@ function PdfViewer({pdfBytes,zoom,page,onPageCount,annotations,activeMark,onAddT
   // Render a single page when doc, page, or zoom changes — no document reload
   useEffect(()=>{
     if(!pdfDoc) return
-    // Cancel any in-flight render immediately (synchronous, before any await)
-    renderTask.current?.cancel()
-    renderTask.current=null
     const seq=++renderSeq.current
     async function renderPage(){
-      const pdfPage=await pdfDoc.getPage(Math.min(page,pdfDoc.numPages))
-      if(renderSeq.current!==seq) return // a newer render was requested
-      const scale=zoom/100
-      const viewport=pdfPage.getViewport({scale})
-      const canvas=canvasRef.current; if(!canvas) return
-      canvas.width=viewport.width; canvas.height=viewport.height
-      const task=pdfPage.render({canvasContext:canvas.getContext('2d')!,viewport})
-      renderTask.current=task
-      await task.promise.catch(()=>{})
+      try{
+        const pdfPage=await pdfDoc.getPage(Math.min(page,pdfDoc.numPages))
+        if(renderSeq.current!==seq) return // a newer render was requested; discard
+        const scale=zoom/100
+        const viewport=pdfPage.getViewport({scale})
+        const canvas=canvasRef.current; if(!canvas) return
+        canvas.width=viewport.width; canvas.height=viewport.height
+        const task=pdfPage.render({canvasContext:canvas.getContext('2d')!,viewport})
+        renderTask.current=task
+        await task.promise.catch(()=>{})
+      }catch{}
     }
     renderPage()
   },[pdfDoc,page,zoom])
@@ -1106,6 +1109,10 @@ export default function App(){
           <div style={{height:14,width:1,backgroundColor:C.inkSoft}}/>
           <button onClick={pickFolder} style={{color:C.inkFaint}} title="Change root folder"><Settings size={11}/></button>
           <div style={{width:18,height:18,backgroundColor:C.ochre,borderRadius:'50%',display:'flex',alignItems:'center',justifyContent:'center',fontSize:9,fontWeight:700,color:C.ink}}>{author}</div>
+          <div style={{width:1,height:14,backgroundColor:C.inkSoft}}/>
+          <button onClick={()=>api?.minimizeWindow()} title="Minimize" style={{width:22,height:22,display:'flex',alignItems:'center',justifyContent:'center',borderRadius:3,color:C.inkFaint}} className="row-hover">─</button>
+          <button onClick={()=>api?.maximizeWindow()} title="Maximize" style={{width:22,height:22,display:'flex',alignItems:'center',justifyContent:'center',borderRadius:3,color:C.inkFaint}} className="row-hover">□</button>
+          <button onClick={()=>api?.closeWindow()} title="Close" style={{width:22,height:22,display:'flex',alignItems:'center',justifyContent:'center',borderRadius:3,color:'#B5443A',fontWeight:700}} className="row-hover">✕</button>
         </div>
       </div>
 
@@ -1525,7 +1532,11 @@ export default function App(){
 
       {/* ── Edit File modal ── */}
       {editFileModal&&(
-        <EditFileModal file={editFileModal} onClose={()=>setEditFileModal(null)} onSaved={()=>refreshDocs(800)}/>
+        <EditFileModal file={editFileModal} onClose={()=>setEditFileModal(null)} onSaved={()=>{
+          refreshDocs(800)
+          if(selectedFile?.path===editFileModal.path&&api)
+            api.readPdf(editFileModal.path).then(b=>{ if(b) setPdfBytes(b) })
+        }}/>
       )}
 
       {/* ── Edit Folder modal ── */}
