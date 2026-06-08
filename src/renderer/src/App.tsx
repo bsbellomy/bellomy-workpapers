@@ -1661,9 +1661,12 @@ export default function App(){
       {/* ── Edit File modal ── */}
       {editFileModal&&(
         <EditFileModal file={editFileModal} onClose={()=>setEditFileModal(null)} onSaved={()=>{
+          const p=editFileModal.path
+          setFileBookmarks(prev=>{const n={...prev};delete n[p];return n})
+          setExpandedBookmarks(prev=>{const n=new Set(prev);n.delete(p);return n})
           refreshDocs(800)
-          if(selectedFile?.path===editFileModal.path&&api)
-            api.readPdf(editFileModal.path).then(b=>{ if(b) setPdfBytes(b) })
+          if(selectedFile?.path===p&&api)
+            api.readPdf(p).then(b=>{ if(b) setPdfBytes(b) })
         }}/>
       )}
 
