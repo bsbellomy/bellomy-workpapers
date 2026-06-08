@@ -92,6 +92,14 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
   const [saving,setSaving]           = useState(false)
   const [progress,setProgress]       = useState(0)
   const [loadError,setLoadError]     = useState<string|null>(null)
+  const pageListRef                  = useRef<HTMLDivElement|null>(null)
+  const pageItemRefs                 = useRef<(HTMLDivElement|null)[]>([])
+
+  // Scroll newly selected page into view at the top of the list
+  useEffect(()=>{
+    const el=pageItemRefs.current[selPage]
+    if(el) el.scrollIntoView({block:'start',behavior:'smooth'})
+  },[selPage])
 
   useEffect(()=>{
     let cancelled=false
@@ -271,7 +279,7 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
                   </div>
                 </div>
               ):Array.from({length:pageCount},(_,i)=>(
-                <div key={i} onClick={()=>setSelPage(i)} className="rounded cursor-pointer"
+                <div key={i} ref={el=>{pageItemRefs.current[i]=el}} onClick={()=>setSelPage(i)} className="rounded cursor-pointer"
                   style={{border:`2px solid ${selPage===i?C.ochre:C.ruleSoft}`,backgroundColor:selPage===i?C.ochreSoft:'transparent',overflow:'hidden',flexShrink:0}}>
                   {thumbs[i]
                     ?<img src={thumbs[i]} style={{width:'100%',height:'auto',display:'block'}} alt=""/>
