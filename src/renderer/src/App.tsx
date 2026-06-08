@@ -181,7 +181,7 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
       const copiedPages=await doc1.copyPages(srcDoc,order)
       copiedPages.forEach(p=>doc1.addPage(p))
       setProgress(55)
-      const cleanBytes=await doc1.save()
+      const cleanBytes=await doc1.save({useObjectStreams:false})
       setProgress(65)
 
       // ── Pass 2: load clean bytes, add outline, save final ────────────────────
@@ -207,10 +207,7 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
             dict.set(PDFName.of('Title'),PDFHexString.fromText(title))
             const dest=PDFArray.withContext(ctx)
             dest.push(pages2[pageIdx].ref)
-            dest.push(PDFName.of('XYZ'))
-            dest.push(PDFNumber.of(0))   // left
-            dest.push(PDFNumber.of(99999)) // top (big number = top of page)
-            dest.push(PDFNumber.of(0))   // zoom 0 = inherit
+            dest.push(PDFName.of('Fit'))  // /Fit is simpler and Acrobat-compatible
             dict.set(PDFName.of('Dest'),dest)
             return ctx.register(dict)
           })
@@ -232,7 +229,7 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
           doc2.catalog.set(PDFName.of('Outlines'),rootRef)
           doc2.catalog.set(PDFName.of('PageMode'),PDFName.of('UseOutlines'))
 
-          finalBytes=await doc2.save()
+          finalBytes=await doc2.save({useObjectStreams:false})
         }catch(bmErr){
           console.warn('Bookmark embed skipped:',bmErr)
           // finalBytes already = cleanBytes, so we still save the reordered PDF safely
