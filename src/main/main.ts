@@ -8,6 +8,29 @@ const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 autoUpdater.autoDownload = true
 autoUpdater.autoInstallOnAppQuit = true
 
+// ── Scan inbox ────────────────────────────────────────────────────────────────
+let mainWin: BrowserWindow | null = null
+let scanWatcher: fs.FSWatcher | null = null
+
+function scanInboxPath(): string {
+  const p = path.join(app.getPath('userData'), 'scans')
+  if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true })
+  return p
+}
+
+function cleanScanInbox() {
+  try {
+    const inbox = scanInboxPath()
+    for (const f of fs.readdirSync(inbox)) {
+      try { fs.unlinkSync(path.join(inbox, f)) } catch {}
+    }
+  } catch {}
+}
+
+function stopScanWatcher() {
+  if (scanWatcher) { try { scanWatcher.close() } catch {} scanWatcher = null }
+}
+
 let currentRootPath = 'Z:\\'
 
 // ── App config file ───────────────────────────────────────────────────────────
@@ -80,12 +103,14 @@ function createWindow() {
     win.loadFile(path.join(app.getAppPath(), 'dist', 'renderer', 'index.html'))
   }
 
+  mainWin = win
   ipcMain.on('win:minimize', () => win.minimize())
   ipcMain.on('win:maximize', () => win.isMaximized() ? win.unmaximize() : win.maximize())
   ipcMain.on('win:close',    () => win.close())
 }
 
 app.whenReady().then(() => {
+  cleanScanInbox() // purge any leftover files from previous session
   createWindow()
   if (!isDev) autoUpdater.checkForUpdatesAndNotify()
 })
@@ -220,18 +245,6 @@ ipcMain.handle('fs:renameFile', async (_e, filePath: string, newName: string) =>
   })
 })
 
-// ── Launch scanner (path configurable via Settings → Scanner) ────────────────
-ipcMain.handle('fs:scan', async () => {
-  const scannerPath = readConfig().scannerPath as string | undefined
-  if (!scannerPath) return { ok: false, needsConfig: true, error: 'No scanner application configured.' }
-  if (!fs.existsSync(scannerPath)) return { ok: false, needsConfig: true, error: 'Configured scanner application could not be found.' }
-  try {
-    const err = await shell.openPath(scannerPath)
-    if (err) return { ok: false, error: err }
-    return { ok: true }
-  } catch (e: unknown) { return { ok: false, error: String(e) } }
-})
-
 // ── Pick scanner application (.exe) and persist to config ────────────────────
 ipcMain.handle('fs:pickScanner', async () => {
   const result = await dialog.showOpenDialog({
@@ -244,6 +257,66 @@ ipcMain.handle('fs:pickScanner', async () => {
   fs.writeFileSync(configPath(), JSON.stringify(c, null, 2), 'utf8')
   return p
 })
+
+// ── Scan inbox path (shown in settings so user can configure scanner output) ──
+ipcMain.handle('fs:getScanInbox', () => scanInboxPath())
+
+// ── Start scan: store destination, clean inbox, watch for files, launch app ──
+ipcMain.handle('fs:startScan', async (_e, destFolder: string) => {
+  const cfg = readConfig()
+  const scannerPath = cfg.scannerPath as string | undefined
+  if (!scannerPath) return { ok: false, needsConfig: true, error: 'No scanner application configured.' }
+  if (!fs.existsSync(scannerPath)) return { ok: false, needsConfig: true, error: 'Configured scanner application could not be found.' }
+
+  cleanScanInbox()
+  stopScanWatcher()
+
+  const inbox = scanInboxPath()
+  const debounceMap = new Map<string, ReturnType<typeof setTimeout>>()
+
+  scanWatcher = fs.watch(inbox, (_event, filename) => {
+    if (!filename || !filename.toLowerCase().endsWith('.pdf')) return
+    const srcPath = path.join(inbox, filename)
+
+    // Debounce: wait for scanner to finish writing the file
+    const existing = debounceMap.get(filename)
+    if (existing) clearTimeout(existing)
+    debounceMap.set(filename, setTimeout(async () => {
+      debounceMap.delete(filename)
+      if (!fs.existsSync(srcPath)) return
+
+      // Resolve name collision at destination
+      let destPath = path.join(destFolder, filename)
+      if (fs.existsSync(destPath)) {
+        const ext  = path.extname(filename)
+        const base = path.basename(filename, ext)
+        let n = 2
+        while (fs.existsSync(path.join(destFolder, `${base} (${n})${ext}`))) n++
+        destPath = path.join(destFolder, `${base} (${n})${ext}`)
+      }
+
+      try {
+        fs.renameSync(srcPath, destPath)
+      } catch {
+        try { fs.copyFileSync(srcPath, destPath); fs.unlinkSync(srcPath) }
+        catch (e) { mainWin?.webContents.send('scan:error', String(e)); return }
+      }
+
+      mainWin?.webContents.send('scan:fileArrived', { name: path.basename(destPath) })
+    }, 800))
+  })
+
+  try {
+    const err = await shell.openPath(scannerPath)
+    if (err) { stopScanWatcher(); return { ok: false, error: err } }
+    return { ok: true }
+  } catch (e: unknown) {
+    stopScanWatcher()
+    return { ok: false, error: String(e) }
+  }
+})
+
+ipcMain.handle('fs:stopScanWatcher', () => stopScanWatcher())
 
 // ── Folder picker ─────────────────────────────────────────────────────────────
 ipcMain.handle('fs:pickFolder', async () => {

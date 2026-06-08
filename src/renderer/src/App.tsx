@@ -24,8 +24,12 @@ const api = (window as unknown as { electronAPI?: {
   moveFile:       (src:string,dest:string)=>Promise<{ok:boolean;error?:string}>
   renameFile:     (p:string,n:string)=>Promise<{ok:boolean;error?:string;newPath?:string}>
   combineFiles:   (top:string,bot:string)=>Promise<{ok:boolean;error?:string}>
-  scan:           ()=>Promise<{ok:boolean;error?:string;needsConfig?:boolean}>
   pickScanner:    ()=>Promise<string|null>
+  getScanInbox:   ()=>Promise<string>
+  startScan:      (destFolder:string)=>Promise<{ok:boolean;error?:string;needsConfig?:boolean}>
+  stopScanWatcher:()=>Promise<void>
+  onScanFile:     (cb:(data:{name:string})=>void)=>void
+  onScanError:    (cb:(err:string)=>void)=>void
   pickFolder:     ()=>Promise<string|null>
   deleteFile:     (p:string)=>Promise<{ok:boolean;error?:string}>
   copyFile:       (p:string)=>Promise<{ok:boolean;error?:string;destPath?:string}>
@@ -789,6 +793,168 @@ function MoveToDrawerModal({files,clients,rootPath,onClose,onMove}:MoveToDrawerP
   )
 }
 
+// ── Scan Destination Modal ────────────────────────────────────────────────────
+
+function ScanDestModal({clients,rootPath,onClose,onStarted}:{clients:string[];rootPath:string;onClose:()=>void;onStarted:()=>void}){
+  const [search,setSearch]           = useState('')
+  const [targetClient,setTargetClient] = useState<string|null>(null)
+  const [folderTree,setFolderTree]   = useState<(DocFile|DocFolder)[]>([])
+  const [destFolder,setDestFolder]   = useState<string|null>(null)
+  const [loading,setLoading]         = useState(false)
+  const [starting,setStarting]       = useState(false)
+  const inputRef                     = useRef<HTMLInputElement>(null)
+
+  useEffect(()=>{inputRef.current?.focus()},[])
+  useEffect(()=>{
+    if(!api||!targetClient) return
+    setLoading(true); setDestFolder(null)
+    const cp=rootPath.replace(/\\$/,'')+`\\${targetClient}`
+    api.listDocs(cp).then(tree=>{setFolderTree(tree);setDestFolder(cp);setLoading(false)})
+  },[targetClient,rootPath])
+
+  const filtered=clients.filter(c=>c.toLowerCase().includes(search.toLowerCase())).slice(0,60)
+
+  function renderFolders(nodes:(DocFile|DocFolder)[],depth=0):React.ReactNode{
+    return nodes.filter(n=>n.type==='folder').map(n=>{
+      const f=n as DocFolder; const isSel=destFolder===f.path
+      return(
+        <div key={f.path}>
+          <div className="flex items-center gap-2 cursor-pointer"
+            style={{paddingLeft:12+depth*16,paddingTop:6,paddingBottom:6,paddingRight:12,backgroundColor:isSel?C.ochreSoft:'transparent',borderLeft:isSel?`3px solid ${C.ochre}`:'3px solid transparent',color:isSel?C.ochreDeep:C.inkSoft}}
+            onClick={()=>setDestFolder(f.path)}>
+            <FolderOpen size={13} style={{color:C.ochre,flexShrink:0}}/>
+            <span className="sans truncate" style={{fontSize:13,fontWeight:isSel?600:400}}>{f.name}</span>
+          </div>
+          {renderFolders(f.children,depth+1)}
+        </div>
+      )
+    })
+  }
+
+  const cp=targetClient?rootPath.replace(/\\$/,'')+`\\${targetClient}`:null
+
+  async function handleStart(){
+    if(!api||!destFolder) return
+    setStarting(true)
+    const r=await api.startScan(destFolder)
+    if(!r.ok){
+      alert(r.needsConfig?'No scanner configured. Use the ⚙ icon next to Scan to set up your scanning application.':'Could not launch scanner: '+(r.error??''))
+      setStarting(false); return
+    }
+    onStarted(); onClose()
+  }
+
+  return(
+    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{backgroundColor:'rgba(26,22,18,0.5)'}} onClick={onClose}>
+      <div className="flex flex-col rounded overflow-hidden" style={{width:680,maxHeight:'80vh',backgroundColor:C.paperLight,boxShadow:'0 8px 40px rgba(26,22,18,0.25)',border:`1px solid ${C.rule}`}} onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3 flex-shrink-0" style={{backgroundColor:C.ink,color:C.paperLight}}>
+          <div className="serif" style={{fontSize:14,fontWeight:600}}>Scan — Choose Destination</div>
+          <button onClick={onClose} style={{color:C.inkFaint,fontSize:20,lineHeight:1}}>×</button>
+        </div>
+        <div className="flex flex-1 overflow-hidden" style={{minHeight:0}}>
+          <div className="flex flex-col flex-shrink-0" style={{width:260,borderRight:`1px solid ${C.rule}`}}>
+            <div className="px-3 py-2 flex-shrink-0" style={{borderBottom:`1px solid ${C.ruleSoft}`}}>
+              <div className="flex items-center gap-1.5 px-2 py-1.5 rounded" style={{backgroundColor:C.paper,border:`1px solid ${C.rule}`}}>
+                <Search size={12} style={{color:C.inkMuted}}/>
+                <input ref={inputRef} type="text" placeholder="Search clients…" value={search} onChange={e=>setSearch(e.target.value)} className="flex-1 outline-none bg-transparent sans" style={{fontSize:13,color:C.ink}}/>
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              {filtered.map(name=>{
+                const isSel=targetClient===name
+                return(
+                  <div key={name} className="flex items-center gap-2 px-3 py-2 cursor-pointer" style={{backgroundColor:isSel?C.ochreSoft:'transparent',borderLeft:isSel?`3px solid ${C.ochre}`:'3px solid transparent'}} onClick={()=>{setTargetClient(name);setSearch(name)}}>
+                    <div style={{width:24,height:24,backgroundColor:isSel?C.ochre:C.paper,border:`1px solid ${isSel?C.ochre:C.rule}`,borderRadius:2,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+                      <span className="serif" style={{fontSize:12,fontWeight:600,color:isSel?C.ink:C.inkSoft}}>{name[0].toUpperCase()}</span>
+                    </div>
+                    <span className="truncate sans" style={{fontSize:13,fontWeight:isSel?600:400,color:C.ink}}>{name}</span>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+          <div className="flex flex-col flex-1 min-w-0">
+            <div className="px-3 py-2 flex-shrink-0" style={{borderBottom:`1px solid ${C.ruleSoft}`,backgroundColor:C.paperDeep}}>
+              <span className="serif" style={{fontSize:11,color:C.inkMuted,fontWeight:600,letterSpacing:0.8,textTransform:'uppercase'}}>
+                {targetClient?`Folders — ${targetClient}`:'Select a client first'}
+              </span>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              {loading&&<div className="p-4 text-center" style={{color:C.inkFaint,fontSize:12}}>Loading…</div>}
+              {!loading&&targetClient&&cp&&(
+                <>
+                  <div className="flex items-center gap-2 cursor-pointer" style={{paddingLeft:12,paddingTop:7,paddingBottom:7,paddingRight:12,backgroundColor:destFolder===cp?C.ochreSoft:'transparent',borderLeft:destFolder===cp?`3px solid ${C.ochre}`:'3px solid transparent'}} onClick={()=>setDestFolder(cp)}>
+                    <FolderOpen size={13} style={{color:C.ochre,flexShrink:0}}/>
+                    <span className="sans" style={{fontSize:13,fontWeight:destFolder===cp?600:400,color:destFolder===cp?C.ochreDeep:C.inkSoft}}>{targetClient} (root)</span>
+                  </div>
+                  {renderFolders(folderTree)}
+                </>
+              )}
+              {!loading&&!targetClient&&<div className="p-4 text-center" style={{color:C.inkFaint,fontSize:12}}>Search and select a client on the left</div>}
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center justify-between px-5 py-3 flex-shrink-0" style={{borderTop:`1px solid ${C.rule}`,backgroundColor:C.paperDeep}}>
+          <div className="mono truncate" style={{fontSize:11,color:C.inkMuted,flex:1,marginRight:16}}>{destFolder?`→ ${destFolder}`:'No folder selected'}</div>
+          <div className="flex gap-2">
+            <button onClick={onClose} className="px-4 py-1.5 rounded sans" style={{fontSize:12,border:`1px solid ${C.rule}`,color:C.inkSoft,backgroundColor:C.paper}}>Cancel</button>
+            <button onClick={handleStart} disabled={!destFolder||starting} className="px-4 py-1.5 rounded sans"
+              style={{fontSize:12,fontWeight:600,backgroundColor:destFolder&&!starting?C.ink:'#ccc',color:C.paperLight,cursor:destFolder&&!starting?'pointer':'not-allowed'}}>
+              {starting?'Starting…':'Scan Here'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Scan Settings Modal ───────────────────────────────────────────────────────
+
+function ScanSettingsModal({onClose}:{onClose:()=>void}){
+  const [inboxPath,setInboxPath] = useState('')
+  const [copied,setCopied]       = useState(false)
+
+  useEffect(()=>{
+    api?.getScanInbox().then(p=>{ if(p) setInboxPath(p) })
+  },[])
+
+  return(
+    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{backgroundColor:'rgba(26,22,18,0.4)'}} onClick={onClose}>
+      <div className="flex flex-col rounded overflow-hidden" style={{width:500,backgroundColor:C.paperLight,boxShadow:'0 8px 40px rgba(26,22,18,0.25)',border:`1px solid ${C.rule}`}} onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3" style={{backgroundColor:C.ink,color:C.paperLight}}>
+          <span className="serif" style={{fontSize:14,fontWeight:600}}>Scanner Settings</span>
+          <button onClick={onClose} style={{color:C.inkFaint,fontSize:20,lineHeight:1}}>×</button>
+        </div>
+        <div className="p-5 flex flex-col gap-5">
+          <div>
+            <div className="sans mb-1" style={{fontSize:11,color:C.inkMuted,fontWeight:600,textTransform:'uppercase',letterSpacing:0.5}}>Scanner Application</div>
+            <div className="flex gap-2 items-center">
+              <button onClick={async()=>{ await api?.pickScanner() }} className="px-3 py-1.5 rounded sans" style={{fontSize:12,backgroundColor:C.ochre,color:C.paperLight,fontWeight:600}}>Choose…</button>
+              <span className="sans" style={{fontSize:11,color:C.inkMuted}}>Select the .exe for your scanning software</span>
+            </div>
+          </div>
+          <div>
+            <div className="sans mb-1" style={{fontSize:11,color:C.inkMuted,fontWeight:600,textTransform:'uppercase',letterSpacing:0.5}}>Scan Inbox Folder</div>
+            <div style={{fontSize:11,color:C.inkFaint,marginBottom:8,lineHeight:1.5}}>Configure your scanner to save PDFs to this folder. The app moves them to the selected client folder automatically — nothing accumulates here.</div>
+            <div className="flex gap-2 items-start">
+              <div className="flex-1 px-2 py-1.5 rounded mono" style={{fontSize:11,backgroundColor:C.paperDeep,border:`1px solid ${C.rule}`,color:C.inkSoft,wordBreak:'break-all',lineHeight:1.5}}>{inboxPath||'Loading…'}</div>
+              <button onClick={()=>{ navigator.clipboard.writeText(inboxPath); setCopied(true); setTimeout(()=>setCopied(false),2000) }}
+                className="px-3 py-1.5 rounded sans flex-shrink-0"
+                style={{fontSize:12,backgroundColor:copied?'#5C8A3A':C.ink,color:C.paperLight,fontWeight:600,transition:'background-color 0.2s'}}>
+                {copied?'✓ Copied':'Copy'}
+              </button>
+            </div>
+          </div>
+        </div>
+        <div className="px-5 py-3 flex justify-end" style={{borderTop:`1px solid ${C.rule}`,backgroundColor:C.paperDeep}}>
+          <button onClick={onClose} className="px-4 py-1.5 rounded sans" style={{fontSize:12,border:`1px solid ${C.rule}`,color:C.inkSoft,backgroundColor:C.paper}}>Close</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 
 export default function App(){
@@ -823,7 +989,10 @@ export default function App(){
   // bookmarks: undefined = not checked, 'loading' = in progress, 'none' = no bookmarks, Bookmark[] = loaded
   const [fileBookmarks,setFileBookmarks]   = useState<Record<string,Bookmark[]|'loading'|'none'>>({})
   const [expandedBookmarks,setExpandedBookmarks] = useState<Set<string>>(new Set())
-  const pendingPageRef = useRef<number|null>(null) // page to jump to after file loads
+  const [showScanModal,setShowScanModal]   = useState(false)
+  const [showScanSettings,setShowScanSettings] = useState(false)
+  const [scanToasts,setScanToasts]         = useState<{id:string;name:string}[]>([])
+  const pendingPageRef = useRef<number|null>(null)
   const pdfScrollRef = useRef<HTMLDivElement|null>(null)
   const author='BC'
 
@@ -889,6 +1058,17 @@ export default function App(){
     window.addEventListener('keydown',onKey)
     return()=>window.removeEventListener('keydown',onKey)
   },[pageCount,selectedFile,clipboard,api,refreshDocs])
+
+  // Register scan event listeners (once on mount)
+  useEffect(()=>{
+    api?.onScanFile(({name})=>{
+      const id=crypto.randomUUID()
+      setScanToasts(prev=>[...prev,{id,name}])
+      setTimeout(()=>setScanToasts(prev=>prev.filter(t=>t.id!==id)),5000)
+      refreshDocs(300)
+    })
+    api?.onScanError(err=>alert('Scan error: '+err))
+  },[])
 
   // Close context menus on click
   useEffect(()=>{
@@ -1340,24 +1520,10 @@ export default function App(){
           {/* ── Function bar ── */}
           <div className="flex items-center gap-1 px-3 py-1.5 flex-shrink-0" style={{backgroundColor:C.paperDeep,borderBottom:`1px solid ${C.rule}`}}>
             {/* Scan */}
-            <button className="tool-btn sans" style={{color:C.inkSoft}} onClick={async ()=>{
-              if(!api) return
-              const r=await api.scan()
-              if(!r.ok&&r.needsConfig){
-                if(window.confirm((r.error??'No scanner configured.')+'\n\nChoose your scanning application now?')){
-                  const p=await api.pickScanner()
-                  if(p) await api.scan()
-                }
-              } else if(!r.ok){
-                alert('Could not launch scanner: '+(r.error??''))
-              }
-            }} title="Launch scanner">
+            <button className="tool-btn sans" style={{color:C.inkSoft}} onClick={()=>setShowScanModal(true)} title="Scan document">
               <ScanLine size={14} style={{color:C.ochre}}/> Scan
             </button>
-            <button className="tool-btn sans" style={{color:C.inkFaint,padding:'5px 6px'}} onClick={async ()=>{
-              if(!api) return
-              await api.pickScanner()
-            }} title="Choose scanner application">
+            <button className="tool-btn sans" style={{color:C.inkFaint,padding:'5px 6px'}} onClick={()=>setShowScanSettings(true)} title="Scanner settings">
               <Settings size={12}/>
             </button>
 
@@ -1691,6 +1857,29 @@ export default function App(){
       {/* ── Edit Folder modal ── */}
       {editFolderModal&&(
         <EditFolderModal folder={editFolderModal} docTree={docTree} onClose={()=>setEditFolderModal(null)} onSaved={()=>refreshDocs(800)}/>
+      )}
+
+      {/* ── Scan destination modal ── */}
+      {showScanModal&&(
+        <ScanDestModal clients={clients} rootPath={rootPath} onClose={()=>setShowScanModal(false)} onStarted={()=>{}}/>
+      )}
+
+      {/* ── Scan settings modal ── */}
+      {showScanSettings&&(
+        <ScanSettingsModal onClose={()=>setShowScanSettings(false)}/>
+      )}
+
+      {/* ── Scan toasts ── */}
+      {scanToasts.length>0&&(
+        <div className="fixed bottom-4 right-4 flex flex-col gap-2 z-50">
+          {scanToasts.map(t=>(
+            <div key={t.id} className="flex items-center gap-2 px-4 py-2.5 rounded sans" style={{backgroundColor:C.ink,color:C.paperLight,boxShadow:'0 4px 16px rgba(26,22,18,0.3)',fontSize:13}}>
+              <Check size={14} style={{color:'#7BC95A',flexShrink:0}}/>
+              <span>Scanned: <strong>{t.name}</strong></span>
+              <button onClick={()=>setScanToasts(prev=>prev.filter(x=>x.id!==t.id))} style={{color:C.inkFaint,marginLeft:4}}><X size={12}/></button>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   )
