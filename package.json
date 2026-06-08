@@ -1,0 +1,59 @@
+{
+  "name": "bellomy-workpapers",
+  "version": "0.1.0",
+  "description": "Tax document viewer for Bellomy Accounting",
+  "main": "dist/main/main/main.js",
+  "scripts": {
+    "dev": "concurrently --kill-others \"npm run dev:renderer\" \"wait-on http://localhost:5173 && npm run dev:main\"",
+    "dev:renderer": "vite src/renderer --port 5173",
+    "dev:main": "tsc -p tsconfig.main.json && set NODE_ENV=development&& electron .",
+    "build": "npm run build:renderer && npm run build:main",
+    "build:renderer": "vite build src/renderer",
+    "build:main": "tsc -p tsconfig.main.json",
+    "package": "npm run build && electron-builder"
+  },
+  "keywords": [],
+  "author": "Bellomy Accounting",
+  "license": "UNLICENSED",
+  "private": true,
+  "dependencies": {
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^4.4.168"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "concurrently": "^8.2.2",
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3",
+    "lucide-react": "^0.400.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.4.5",
+    "vite": "^5.3.1",
+    "wait-on": "^7.2.0"
+  },
+  "build": {
+    "appId": "com.bellomyaccounting.workpapers",
+    "productName": "Bellomy Workpapers",
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Bellomy Workpapers"
+    },
+    "files": [
+      "dist/**/*",
+      "node_modules/pdf-lib/**/*",
+      "node_modules/pdfjs-dist/**/*"
+    ],
+    "asar": true
+  }
+}

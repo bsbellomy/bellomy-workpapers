@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "bellomy-workpapers",
+      "runtimeExecutable": "C:\\Program Files\\nodejs\\node.exe",
+      "runtimeArgs": ["C:\\Projects\\bellomy-workpapers\\node_modules\\vite\\bin\\vite.js", "C:\\Projects\\bellomy-workpapers\\src\\renderer", "--port", "5173"],
+      "port": 5173
+    }
+  ]
+}
