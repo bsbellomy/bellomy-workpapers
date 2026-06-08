@@ -6,6 +6,18 @@ const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
 let currentRootPath = 'Z:\\'
 
+// ── App config file ───────────────────────────────────────────────────────────
+function configPath() { return path.join(app.getPath('userData'), 'bellomy-config.json') }
+function readConfig(): Record<string, unknown> {
+  try { if (fs.existsSync(configPath())) return JSON.parse(fs.readFileSync(configPath(), 'utf8')) } catch {}
+  return {}
+}
+ipcMain.handle('fs:getConfig', (_e, key: string) => readConfig()[key] ?? null)
+ipcMain.handle('fs:setConfig', (_e, key: string, value: unknown) => {
+  try { const c=readConfig(); c[key]=value; fs.writeFileSync(configPath(), JSON.stringify(c,null,2),'utf8'); return true }
+  catch { return false }
+})
+
 // Annotations: Z:\[Client]\Private\[subfolder__filename].json
 function privateDir(pdfPath: string): string {
   const rel = path.relative(currentRootPath, pdfPath)

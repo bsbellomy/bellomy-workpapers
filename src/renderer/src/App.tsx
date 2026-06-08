@@ -30,6 +30,8 @@ const api = (window as unknown as { electronAPI?: {
   copyFile:       (p:string)=>Promise<{ok:boolean;error?:string;destPath?:string}>
   savePdf:        (p:string,b:ArrayBuffer)=>Promise<{ok:boolean;error?:string}>
   renameFolder:   (p:string,n:string)=>Promise<{ok:boolean;error?:string;newPath?:string}>
+  getConfig:      (k:string)=>Promise<unknown>
+  setConfig:      (k:string,v:unknown)=>Promise<boolean>
   printFile:      (p:string)=>Promise<{ok:boolean;error?:string}>
   printBytes:     (b:ArrayBuffer)=>Promise<{ok:boolean;error?:string}>
   minimizeWindow: ()=>void
@@ -87,15 +89,18 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
   const [loadPct,setLoadPct]         = useState(0)
   const [selPage,setSelPage]         = useState(0)
   const [assignments,setAssignments] = useState<Record<number,string>>({})
-  const [buttons,setButtons]         = useState<BmBtn[]>(()=>{
-    try{return JSON.parse(localStorage.getItem('bm-buttons')||'[]')}catch{return[]}
-  })
+  const [buttons,setButtons]         = useState<BmBtn[]>([])
   const [newLabel,setNewLabel]       = useState('')
   const [saving,setSaving]           = useState(false)
   const [progress,setProgress]       = useState(0)
   const [loadError,setLoadError]     = useState<string|null>(null)
   const pageListRef                  = useRef<HTMLDivElement|null>(null)
   const pageItemRefs                 = useRef<(HTMLDivElement|null)[]>([])
+
+  // Load buttons from persistent config file on first open
+  useEffect(()=>{
+    api?.getConfig('bookmarkButtons').then(b=>{ if(Array.isArray(b)) setButtons(b as BmBtn[]) })
+  },[])
 
   // Scroll newly selected page into view at the top of the list
   useEffect(()=>{
@@ -117,6 +122,32 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
         const pdf=await pdfjsLib.getDocument({data:new Uint8Array(bytes),disableWorker:false}).promise
         if(cancelled) return
         setPageCount(pdf.numPages)
+
+        // Pre-populate assignments from existing PDF outline
+        try{
+          const outline=await pdf.getOutline()
+          if(outline&&outline.length>0){
+            // We need buttons loaded first; use a small delay to let them resolve
+            const storedBtns=await api.getConfig('bookmarkButtons')
+            const btns:BmBtn[]=Array.isArray(storedBtns)?(storedBtns as BmBtn[]):[]
+            const initAssign:Record<number,string>={}
+            for(const item of outline){
+              const btn=btns.find(b=>b.label===item.title)
+              if(btn&&item.dest){
+                try{
+                  let dest:any=item.dest
+                  if(typeof dest==='string') dest=await pdf.getDestination(dest)
+                  if(dest?.[0]){
+                    const pgIdx=await pdf.getPageIndex(dest[0])
+                    initAssign[pgIdx]=btn.id
+                  }
+                }catch{}
+              }
+            }
+            if(!cancelled) setAssignments(initAssign)
+          }
+        }catch{}
+
         const t:string[]=[]
         for(let i=1;i<=pdf.numPages;i++){
           if(cancelled) return
@@ -142,7 +173,7 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
 
   function saveButtons(btns:BmBtn[]){
     setButtons(btns)
-    localStorage.setItem('bm-buttons',JSON.stringify(btns))
+    api?.setConfig('bookmarkButtons',btns)
   }
 
   function addButton(){
