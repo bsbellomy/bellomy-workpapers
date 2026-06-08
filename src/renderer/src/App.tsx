@@ -91,29 +91,40 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
   const [newLabel,setNewLabel]       = useState('')
   const [saving,setSaving]           = useState(false)
   const [progress,setProgress]       = useState(0)
+  const [loadError,setLoadError]     = useState<string|null>(null)
 
   useEffect(()=>{
     let cancelled=false
     async function load(){
-      setLoading(true)
-      const bytes=await api!.readPdf(file.path)
-      if(!bytes||cancelled) return
-      const pdfjsLib=await import('pdfjs-dist')
-      pdfjsLib.GlobalWorkerOptions.workerSrc=new URL('pdfjs-dist/build/pdf.worker.min.mjs',import.meta.url).toString()
-      const pdf=await pdfjsLib.getDocument({data:new Uint8Array(bytes)}).promise
-      setPageCount(pdf.numPages)
-      const t:string[]=[]
-      for(let i=1;i<=pdf.numPages;i++){
+      setLoading(true); setLoadError(null)
+      try{
+        if(!api) throw new Error('No API available')
+        const bytes=await api.readPdf(file.path)
+        if(!bytes) throw new Error('Could not read PDF — file may be missing or unreadable')
         if(cancelled) return
-        const pg=await pdf.getPage(i)
-        const vp=pg.getViewport({scale:0.6})
-        const cv=document.createElement('canvas')
-        cv.width=vp.width; cv.height=vp.height
-        await pg.render({canvasContext:cv.getContext('2d')!,viewport:vp}).promise.catch(()=>{})
-        t.push(cv.toDataURL('image/jpeg',0.85))
-        setLoadPct(Math.round(i/pdf.numPages*100))
+        const pdfjsLib=await import('pdfjs-dist')
+        pdfjsLib.GlobalWorkerOptions.workerSrc=new URL('pdfjs-dist/build/pdf.worker.min.mjs',import.meta.url).toString()
+        const pdf=await pdfjsLib.getDocument({data:new Uint8Array(bytes),disableWorker:false}).promise
+        if(cancelled) return
+        setPageCount(pdf.numPages)
+        const t:string[]=[]
+        for(let i=1;i<=pdf.numPages;i++){
+          if(cancelled) return
+          try{
+            const pg=await pdf.getPage(i)
+            const vp=pg.getViewport({scale:0.6})
+            const cv=document.createElement('canvas')
+            cv.width=Math.round(vp.width); cv.height=Math.round(vp.height)
+            const ctx=cv.getContext('2d')
+            if(ctx) await pg.render({canvasContext:ctx,viewport:vp}).promise.catch(()=>{})
+            t.push(cv.toDataURL('image/jpeg',0.85))
+          }catch{ t.push('') }
+          setLoadPct(Math.round(i/pdf.numPages*100))
+        }
+        if(!cancelled){setThumbs(t);setLoading(false)}
+      }catch(e){
+        if(!cancelled){setLoadError(String(e));setLoading(false)}
       }
-      if(!cancelled){setThumbs(t);setLoading(false)}
     }
     load()
     return()=>{cancelled=true}
@@ -218,7 +229,12 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
               {loading&&<span className="sans" style={{fontSize:10,color:C.inkFaint}}>Loading thumbnails… {loadPct}%</span>}
             </div>
             <div className="flex-1 overflow-y-auto p-3" style={{display:'flex',flexDirection:'column',gap:4}}>
-              {loading?(
+              {loadError?(
+                <div style={{padding:24,color:'#B5443A',fontSize:12,lineHeight:1.6}}>
+                  <div style={{fontWeight:600,marginBottom:6}}>Failed to load PDF</div>
+                  <div style={{fontFamily:'monospace',fontSize:11,backgroundColor:'#FFF5F5',padding:10,borderRadius:4,border:'1px solid #F5C6C6',wordBreak:'break-all'}}>{loadError}</div>
+                </div>
+              ):loading?(
                 <div style={{textAlign:'center',padding:40,color:C.inkFaint,fontSize:12}}>
                   <div style={{marginBottom:8}}>Rendering pages… {loadPct}%</div>
                   <div style={{height:4,backgroundColor:C.ruleSoft,borderRadius:2,overflow:'hidden'}}>
