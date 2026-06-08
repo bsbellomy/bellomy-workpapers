@@ -1,8 +1,12 @@
 import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
+import { autoUpdater } from 'electron-updater'
 import path from 'path'
 import fs from 'fs'
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
+
+autoUpdater.autoDownload = true
+autoUpdater.autoInstallOnAppQuit = true
 
 let currentRootPath = 'Z:\\'
 
@@ -81,7 +85,10 @@ function createWindow() {
   ipcMain.on('win:close',    () => win.close())
 }
 
-app.whenReady().then(createWindow)
+app.whenReady().then(() => {
+  createWindow()
+  if (!isDev) autoUpdater.checkForUpdatesAndNotify()
+})
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
 
 // ── List clients ──────────────────────────────────────────────────────────────
