@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAnnotations:  (pdfPath: string) => ipcRenderer.invoke('fs:getAnnotations', pdfPath),
   combineFiles:    (topPath: string, bottomPath: string) => ipcRenderer.invoke('fs:combineFiles', topPath, bottomPath),
   scan:            () => ipcRenderer.invoke('fs:scan'),
+  pickScanner:     () => ipcRenderer.invoke('fs:pickScanner'),
   pickFolder:      () => ipcRenderer.invoke('fs:pickFolder'),
   deleteFile:      (p:string) => ipcRenderer.invoke('fs:deleteFile', p),
   copyFile:        (p:string) => ipcRenderer.invoke('fs:copyFile', p),

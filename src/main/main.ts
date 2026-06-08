@@ -220,18 +220,29 @@ ipcMain.handle('fs:renameFile', async (_e, filePath: string, newName: string) =>
   })
 })
 
-// ── Launch system scanner ─────────────────────────────────────────────────────
+// ── Launch scanner (path configurable via Settings → Scanner) ────────────────
 ipcMain.handle('fs:scan', async () => {
+  const scannerPath = readConfig().scannerPath as string | undefined
+  if (!scannerPath) return { ok: false, needsConfig: true, error: 'No scanner application configured.' }
+  if (!fs.existsSync(scannerPath)) return { ok: false, needsConfig: true, error: 'Configured scanner application could not be found.' }
   try {
-    // Windows Fax and Scan — available on all Windows 10/11 machines
-    shell.openPath('C:\\Windows\\System32\\WFS.exe').then(err => {
-      if (err) {
-        // Fallback: open Windows Scan from the Store URI
-        shell.openExternal('ms-windows-store://pdp/?PFN=Microsoft.WindowsScan_8wekyb3d8bbwe')
-      }
-    })
-    return true
-  } catch { return false }
+    const err = await shell.openPath(scannerPath)
+    if (err) return { ok: false, error: err }
+    return { ok: true }
+  } catch (e: unknown) { return { ok: false, error: String(e) } }
+})
+
+// ── Pick scanner application (.exe) and persist to config ────────────────────
+ipcMain.handle('fs:pickScanner', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openFile'],
+    filters: [{ name: 'Programs', extensions: ['exe'] }],
+  })
+  if (result.canceled || !result.filePaths[0]) return null
+  const p = result.filePaths[0]
+  const c = readConfig(); c.scannerPath = p
+  fs.writeFileSync(configPath(), JSON.stringify(c, null, 2), 'utf8')
+  return p
 })
 
 // ── Folder picker ─────────────────────────────────────────────────────────────

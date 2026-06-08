@@ -24,7 +24,8 @@ const api = (window as unknown as { electronAPI?: {
   moveFile:       (src:string,dest:string)=>Promise<{ok:boolean;error?:string}>
   renameFile:     (p:string,n:string)=>Promise<{ok:boolean;error?:string;newPath?:string}>
   combineFiles:   (top:string,bot:string)=>Promise<{ok:boolean;error?:string}>
-  scan:           ()=>Promise<boolean>
+  scan:           ()=>Promise<{ok:boolean;error?:string;needsConfig?:boolean}>
+  pickScanner:    ()=>Promise<string|null>
   pickFolder:     ()=>Promise<string|null>
   deleteFile:     (p:string)=>Promise<{ok:boolean;error?:string}>
   copyFile:       (p:string)=>Promise<{ok:boolean;error?:string;destPath?:string}>
@@ -1339,8 +1340,25 @@ export default function App(){
           {/* ── Function bar ── */}
           <div className="flex items-center gap-1 px-3 py-1.5 flex-shrink-0" style={{backgroundColor:C.paperDeep,borderBottom:`1px solid ${C.rule}`}}>
             {/* Scan */}
-            <button className="tool-btn sans" style={{color:C.inkSoft}} onClick={()=>api?.scan()} title="Launch scanner">
+            <button className="tool-btn sans" style={{color:C.inkSoft}} onClick={async ()=>{
+              if(!api) return
+              const r=await api.scan()
+              if(!r.ok&&r.needsConfig){
+                if(window.confirm((r.error??'No scanner configured.')+'\n\nChoose your scanning application now?')){
+                  const p=await api.pickScanner()
+                  if(p) await api.scan()
+                }
+              } else if(!r.ok){
+                alert('Could not launch scanner: '+(r.error??''))
+              }
+            }} title="Launch scanner">
               <ScanLine size={14} style={{color:C.ochre}}/> Scan
+            </button>
+            <button className="tool-btn sans" style={{color:C.inkFaint,padding:'5px 6px'}} onClick={async ()=>{
+              if(!api) return
+              await api.pickScanner()
+            }} title="Choose scanner application">
+              <Settings size={12}/>
             </button>
 
             <div style={{width:1,height:18,backgroundColor:C.rule,margin:'0 4px'}}/>
