@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
 import { autoUpdater } from 'electron-updater'
+import { spawn } from 'child_process'
 import path from 'path'
 import fs from 'fs'
 
@@ -29,6 +30,11 @@ function cleanScanInbox() {
 
 function stopScanWatcher() {
   if (scanWatcher) { try { scanWatcher.close() } catch {} scanWatcher = null }
+}
+
+function getScanHelperPath(): string {
+  if (isDev) return path.join(app.getAppPath(), 'scanner', 'ScanHelper', 'bin', 'publish', 'ScanHelper.exe')
+  return path.join(process.resourcesPath, 'scanner', 'ScanHelper.exe')
 }
 
 let currentRootPath = 'Z:\\'
@@ -261,59 +267,69 @@ ipcMain.handle('fs:pickScanner', async () => {
 // ── Scan inbox path (shown in settings so user can configure scanner output) ──
 ipcMain.handle('fs:getScanInbox', () => scanInboxPath())
 
-// ── Start scan: store destination, clean inbox, watch for files, launch app ──
-ipcMain.handle('fs:startScan', async (_e, destFolder: string) => {
-  const cfg = readConfig()
-  const scannerPath = cfg.scannerPath as string | undefined
-  if (!scannerPath) return { ok: false, needsConfig: true, error: 'No scanner application configured.' }
-  if (!fs.existsSync(scannerPath)) return { ok: false, needsConfig: true, error: 'Configured scanner application could not be found.' }
+// ── Start scan via NAPS2.Sdk helper ──────────────────────────────────────────
+ipcMain.handle('fs:startScan', (_e, destFolder: string, useNativeUI: boolean) => {
+  const helperPath = getScanHelperPath()
+  if (!fs.existsSync(helperPath))
+    return Promise.resolve({ ok: false, error: 'Scanner helper not found. Please reinstall the app.' })
 
-  cleanScanInbox()
-  stopScanWatcher()
+  const args = ['scan', destFolder]
+  if (useNativeUI) args.push('--ui')
 
-  const inbox = scanInboxPath()
-  const debounceMap = new Map<string, ReturnType<typeof setTimeout>>()
+  return new Promise<{ ok: boolean; error?: string }>(resolve => {
+    const child = spawn(helperPath, args)
+    let stdout = ''
+    let stderr = ''
 
-  scanWatcher = fs.watch(inbox, (_event, filename) => {
-    if (!filename || !filename.toLowerCase().endsWith('.pdf')) return
-    const srcPath = path.join(inbox, filename)
-
-    // Debounce: wait for scanner to finish writing the file
-    const existing = debounceMap.get(filename)
-    if (existing) clearTimeout(existing)
-    debounceMap.set(filename, setTimeout(async () => {
-      debounceMap.delete(filename)
-      if (!fs.existsSync(srcPath)) return
-
-      // Resolve name collision at destination
-      let destPath = path.join(destFolder, filename)
-      if (fs.existsSync(destPath)) {
-        const ext  = path.extname(filename)
-        const base = path.basename(filename, ext)
-        let n = 2
-        while (fs.existsSync(path.join(destFolder, `${base} (${n})${ext}`))) n++
-        destPath = path.join(destFolder, `${base} (${n})${ext}`)
+    child.stdout.on('data', (d: Buffer) => { stdout += d.toString() })
+    child.stderr.on('data', (d: Buffer) => {
+      const chunk = d.toString()
+      stderr += chunk
+      for (const line of chunk.split('\n')) {
+        if (line.startsWith('PAGE:')) {
+          const n = parseInt(line.slice(5))
+          if (!isNaN(n)) mainWin?.webContents.send('scan:progress', { page: n })
+        }
       }
+    })
 
-      try {
-        fs.renameSync(srcPath, destPath)
-      } catch {
-        try { fs.copyFileSync(srcPath, destPath); fs.unlinkSync(srcPath) }
-        catch (e) { mainWin?.webContents.send('scan:error', String(e)); return }
+    child.on('close', (code: number | null) => {
+      const tryParse = (s: string) => { try { return JSON.parse(s.trim()) } catch { return null } }
+      if (code === 0) {
+        const result = tryParse(stdout)
+        if (result?.ok) {
+          mainWin?.webContents.send('scan:fileArrived', { name: result.name })
+          resolve({ ok: true })
+        } else {
+          resolve({ ok: false, error: result?.error ?? 'Scan failed' })
+        }
+      } else {
+        const errLines = stderr.trim().split('\n').filter((l: string) => l.startsWith('{'))
+        const result = errLines.length ? tryParse(errLines[errLines.length - 1]) : null
+        resolve({ ok: false, error: result?.error ?? `Scanner exited with code ${code}` })
       }
+    })
 
-      mainWin?.webContents.send('scan:fileArrived', { name: path.basename(destPath) })
-    }, 800))
+    child.on('error', (err: Error) => resolve({ ok: false, error: err.message }))
   })
+})
 
-  try {
-    const err = await shell.openPath(scannerPath)
-    if (err) { stopScanWatcher(); return { ok: false, error: err } }
-    return { ok: true }
-  } catch (e: unknown) {
-    stopScanWatcher()
-    return { ok: false, error: String(e) }
-  }
+// ── List TWAIN devices ────────────────────────────────────────────────────────
+ipcMain.handle('fs:listScanDevices', () => {
+  const helperPath = getScanHelperPath()
+  if (!fs.existsSync(helperPath))
+    return Promise.resolve({ ok: false, devices: [], error: 'Scanner helper not found.' })
+
+  return new Promise<{ ok: boolean; devices: { ID: string; Name: string }[]; error?: string }>(resolve => {
+    const child = spawn(helperPath, ['list'])
+    let stdout = ''
+    child.stdout.on('data', (d: Buffer) => { stdout += d.toString() })
+    child.on('close', () => {
+      try { resolve(JSON.parse(stdout.trim())) }
+      catch { resolve({ ok: false, devices: [], error: 'Failed to list devices' }) }
+    })
+    child.on('error', (err: Error) => resolve({ ok: false, devices: [], error: err.message }))
+  })
 })
 
 ipcMain.handle('fs:stopScanWatcher', () => stopScanWatcher())

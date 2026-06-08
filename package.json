@@ -7,7 +7,8 @@
     "dev": "concurrently --kill-others \"npm run dev:renderer\" \"wait-on http://localhost:5173 && npm run dev:main\"",
     "dev:renderer": "vite src/renderer --port 5173",
     "dev:main": "tsc -p tsconfig.main.json && set NODE_ENV=development&& electron .",
-    "build": "npm run build:renderer && npm run build:main",
+    "build": "npm run build:scanner && npm run build:renderer && npm run build:main",
+    "build:scanner": "dotnet publish scanner/ScanHelper/ScanHelper.csproj -c Release -o scanner/ScanHelper/bin/publish",
     "build:renderer": "vite build src/renderer",
     "build:main": "tsc -p tsconfig.main.json",
     "package": "npm run build && electron-builder",
@@ -56,6 +57,13 @@
       "node_modules/pdf-lib/**/*",
       "node_modules/pdfjs-dist/**/*",
       "node_modules/electron-updater/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "scanner/ScanHelper/bin/publish",
+        "to": "scanner",
+        "filter": ["**/*"]
+      }
     ],
     "asar": true,
     "publish": {
