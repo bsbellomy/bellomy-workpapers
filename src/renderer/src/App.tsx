@@ -273,7 +273,7 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
               ):Array.from({length:pageCount},(_,i)=>(
                 <div key={i} onClick={()=>setSelPage(i)} className="flex items-center gap-3 rounded cursor-pointer"
                   style={{padding:'6px 8px',backgroundColor:selPage===i?C.ochreSoft:'transparent',border:`1px solid ${selPage===i?C.ochreLight:C.ruleSoft}`}}>
-                  {thumbs[i]&&<img src={thumbs[i]} style={{width:56,height:'auto',border:`1px solid ${C.rule}`,flexShrink:0}} alt=""/>}
+                  {thumbs[i]&&<img src={thumbs[i]} style={{width:180,height:'auto',border:`1px solid ${C.rule}`,flexShrink:0}} alt=""/>}
                   <div className="flex-1 min-w-0">
                     <div className="mono" style={{fontSize:11,color:C.inkMuted}}>Page {i+1}</div>
                     {assignments[i]?(
