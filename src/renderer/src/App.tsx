@@ -257,9 +257,9 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
               <span className="sans" style={{fontSize:11,color:C.inkMuted,letterSpacing:0.5,textTransform:'uppercase',fontWeight:600}}>Pages</span>
               {loading&&<span className="sans" style={{fontSize:10,color:C.inkFaint}}>Loading thumbnails… {loadPct}%</span>}
             </div>
-            <div className="flex-1 overflow-y-auto p-3" style={{display:'flex',flexDirection:'column',gap:4}}>
+            <div className="flex-1 overflow-y-auto p-3" style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:8,alignContent:'start'}}>
               {loadError?(
-                <div style={{padding:24,color:'#B5443A',fontSize:12,lineHeight:1.6}}>
+                <div style={{gridColumn:'1/-1',padding:24,color:'#B5443A',fontSize:12,lineHeight:1.6}}>
                   <div style={{fontWeight:600,marginBottom:6}}>Failed to load PDF</div>
                   <div style={{fontFamily:'monospace',fontSize:11,backgroundColor:'#FFF5F5',padding:10,borderRadius:4,border:'1px solid #F5C6C6',wordBreak:'break-all'}}>{loadError}</div>
                 </div>
