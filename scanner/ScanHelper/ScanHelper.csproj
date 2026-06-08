@@ -11,5 +11,6 @@
   <ItemGroup>
     <PackageReference Include="NAPS2.Sdk" Version="1.*" />
     <PackageReference Include="NAPS2.Sdk.Worker.Win32" Version="1.*" />
+    <PackageReference Include="NAPS2.Images.Gdi" Version="1.*" />
   </ItemGroup>
 </Project>
