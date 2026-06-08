@@ -262,6 +262,34 @@ ipcMain.handle('fs:savePdf', async (_e, filePath: string, bytes: ArrayBuffer) =>
   }
 })
 
+// ── Print file (full doc) ─────────────────────────────────────────────────────
+ipcMain.handle('fs:printFile', async (_e, filePath: string) => {
+  const { execFile } = await import('child_process')
+  return new Promise(resolve => {
+    const script = `Start-Process -FilePath '${filePath.replace(/'/g,"''")}' -Verb Print`
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], (err, _out, stderr) => {
+      if (err || stderr.trim()) resolve({ ok: false, error: stderr.trim() || String(err) })
+      else resolve({ ok: true })
+    })
+  })
+})
+
+// ── Print bytes (single page) — write temp file and print ─────────────────────
+ipcMain.handle('fs:printBytes', async (_e, bytes: ArrayBuffer) => {
+  const { execFile } = await import('child_process')
+  const tmpPath = path.join(app.getPath('temp'), `bellomy-print-${Date.now()}.pdf`)
+  try {
+    fs.writeFileSync(tmpPath, Buffer.from(bytes))
+    return new Promise<{ok:boolean;error?:string}>(resolve => {
+      const script = `Start-Process -FilePath '${tmpPath.replace(/'/g,"''")}' -Verb Print`
+      execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], (err, _out, stderr) => {
+        if (err || stderr.trim()) resolve({ ok: false, error: stderr.trim() || String(err) })
+        else resolve({ ok: true })
+      })
+    })
+  } catch (e: unknown) { return { ok: false, error: String(e) } }
+})
+
 // ── Rename folder ─────────────────────────────────────────────────────────────
 ipcMain.handle('fs:renameFolder', async (_e, folderPath: string, newName: string) => {
   const { execFile } = await import('child_process')

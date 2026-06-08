@@ -3,7 +3,7 @@ import {
   Search, FolderOpen, FolderClosed, FileText, Check, X,
   ChevronRight, ChevronDown, FileSignature, ZoomIn, ZoomOut,
   MessageSquare, PanelRightClose, PanelRightOpen, PanelLeftClose, PanelLeftOpen,
-  Clock, Layers, Settings, ScanLine, ArrowLeft, Merge,
+  Clock, Layers, Settings, ScanLine, ArrowLeft, Merge, Printer,
 } from 'lucide-react'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -30,6 +30,8 @@ const api = (window as unknown as { electronAPI?: {
   copyFile:       (p:string)=>Promise<{ok:boolean;error?:string;destPath?:string}>
   savePdf:        (p:string,b:ArrayBuffer)=>Promise<{ok:boolean;error?:string}>
   renameFolder:   (p:string,n:string)=>Promise<{ok:boolean;error?:string;newPath?:string}>
+  printFile:      (p:string)=>Promise<{ok:boolean;error?:string}>
+  printBytes:     (b:ArrayBuffer)=>Promise<{ok:boolean;error?:string}>
   minimizeWindow: ()=>void
   maximizeWindow: ()=>void
   closeWindow:    ()=>void
@@ -369,7 +371,7 @@ function EditFolderModal({folder,docTree,onClose,onSaved}:{folder:DocFolder;docT
   const [selected,setSelected] = useState<DocFile[]>([])
   const [progress,setProgress] = useState(0)
   const [saving,setSaving]     = useState(false)
-  const [outName,setOutName]   = useState(`${folder.name} Combined.pdf`)
+  const [outputFileIdx,setOutputFileIdx] = useState(0)
   const [destPath,setDestPath] = useState('')
   const [renames,setRenames]   = useState<Record<string,string>>({})
 
@@ -406,10 +408,13 @@ function EditFolderModal({folder,docTree,onClose,onSaved}:{folder:DocFolder;docT
           pages.forEach(p=>merged.addPage(p))
         }
         setProgress(75)
-        const saved=await merged.save()
-        const dest=folder.path+'\\'+outName
-        const r=await api.savePdf(dest,saved.buffer.slice(saved.byteOffset,saved.byteOffset+saved.byteLength))
+        const saved=await merged.save({useObjectStreams:false})
+        const keepIdx=Math.min(outputFileIdx,selected.length-1)
+        const keepPath=selected[keepIdx].path
+        const r=await api.savePdf(keepPath,saved.buffer.slice(saved.byteOffset,saved.byteOffset+saved.byteLength))
         if(!r.ok) throw new Error(r.error)
+        // Delete the other selected files
+        for(const f of selected){ if(f.path!==keepPath) await api.deleteFile(f.path) }
       } else if(action==='move'){
         for(let i=0;i<selected.length;i++){
           setProgress(10+Math.round(i/selected.length*85))
@@ -509,11 +514,14 @@ function EditFolderModal({folder,docTree,onClose,onSaved}:{folder:DocFolder;docT
           <div className="flex flex-col flex-shrink-0 gap-3" style={{width:210}}>
             {action==='combine'&&(
               <div className="p-3 rounded" style={{border:`1px solid ${C.rule}`,backgroundColor:C.paper}}>
-                <div className="sans mb-1" style={{fontSize:11,color:C.inkMuted,fontWeight:600}}>Output Filename</div>
-                <input type="text" value={outName} onChange={e=>setOutName(e.target.value)}
+                <div className="sans mb-1" style={{fontSize:11,color:C.inkMuted,fontWeight:600}}>Keep as:</div>
+                <select value={outputFileIdx} onChange={e=>setOutputFileIdx(Number(e.target.value))}
                   className="w-full outline-none sans px-2 py-1 rounded"
-                  style={{fontSize:11,color:C.ink,border:`1px solid ${C.rule}`,backgroundColor:C.paperDeep}}/>
-                <div style={{fontSize:10,color:C.inkFaint,marginTop:4}}>Created in this folder</div>
+                  style={{fontSize:11,color:C.ink,border:`1px solid ${C.rule}`,backgroundColor:C.paperDeep}}>
+                  {selected.map((f,i)=><option key={f.path} value={i}>{f.name}</option>)}
+                  {selected.length===0&&<option value={0}>Select files first</option>}
+                </select>
+                <div style={{fontSize:10,color:C.inkFaint,marginTop:4}}>Other selected files will be deleted after combining.</div>
               </div>
             )}
             {action==='move'&&(
@@ -989,6 +997,27 @@ export default function App(){
   const selIdx=selectedFile?visible.findIndex(f=>f.path===selectedFile.path):-1
   const fileAbove=selIdx>0?visible[selIdx-1]:null
 
+  async function handlePrint(){
+    if(!api||!selectedFile) return
+    const r=await api.printFile(selectedFile.path)
+    if(!r.ok) alert('Print failed: '+(r.error??''))
+  }
+
+  async function handlePrintPage(){
+    if(!api||!pdfBytes) return
+    try{
+      const {PDFDocument}=await import('pdf-lib')
+      const src=await PDFDocument.load(pdfBytes)
+      const doc=await PDFDocument.create()
+      const [pg]=await doc.copyPages(src,[currentPage-1])
+      doc.addPage(pg)
+      const saved=await doc.save({useObjectStreams:false})
+      const buf=saved.buffer.slice(saved.byteOffset,saved.byteOffset+saved.byteLength)
+      const r=await api.printBytes(buf)
+      if(!r.ok) alert('Print failed: '+(r.error??''))
+    }catch(e){alert('Print failed: '+String(e))}
+  }
+
   async function handleCombine(){
     if(!api||!selectedFile||!fileAbove) return
     const ok=window.confirm(`Combine:\n  ${fileAbove.name}\n+ ${selectedFile.name}\n\nThe top file will contain both documents. The bottom file will be deleted.`)
@@ -1037,7 +1066,7 @@ export default function App(){
               onDragLeave={e=>{e.stopPropagation();setDragOver(null)}}
               onDrop={e=>{e.preventDefault();e.stopPropagation();handleDrop(node.path)}}
             >
-              {open?<ChevronDown size={11}/>:<ChevronRight size={11}/>}
+              <span style={{fontSize:15,fontWeight:700,color:C.inkMuted,width:14,display:'inline-block',textAlign:'center',lineHeight:1,flexShrink:0}}>{open?'−':'+'}</span>
               {open?<FolderOpen size={14} style={{color:isDrop?C.ochreDeep:C.ochre,flexShrink:0}}/>:<FolderClosed size={14} style={{color:isDrop?C.ochreDeep:C.ochre,flexShrink:0}}/>}
               <span className="serif" style={{fontSize:14,fontWeight:600,flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{node.name}</span>
             </div>
@@ -1092,9 +1121,7 @@ export default function App(){
               >
                 {bmState==='loading'
                   ? <span style={{fontSize:9}}>…</span>
-                  : bmOpen
-                    ? <ChevronDown size={11}/>
-                    : <ChevronRight size={11}/>
+                  : <span style={{fontSize:13,fontWeight:700,lineHeight:1}}>{bmOpen?'−':'+'}</span>
                 }
               </button>
             ) : (
@@ -1283,6 +1310,18 @@ export default function App(){
             {/* Scan */}
             <button className="tool-btn sans" style={{color:C.inkSoft}} onClick={()=>api?.scan()} title="Launch scanner">
               <ScanLine size={14} style={{color:C.ochre}}/> Scan
+            </button>
+
+            <div style={{width:1,height:18,backgroundColor:C.rule,margin:'0 4px'}}/>
+
+            {/* Print full doc */}
+            <button className="tool-btn" onClick={handlePrint} disabled={!selectedFile} title="Print document" style={{color:C.inkSoft,padding:'5px 8px'}}>
+              <Printer size={14} style={{color:selectedFile?C.ochre:'#bbb'}}/>
+            </button>
+            {/* Print current page */}
+            <button className="tool-btn" onClick={handlePrintPage} disabled={!selectedFile||!pdfBytes} title="Print current page" style={{color:C.inkSoft,padding:'5px 8px',position:'relative'}}>
+              <Printer size={14} style={{color:selectedFile?C.ochre:'#bbb'}}/>
+              <span style={{position:'absolute',top:3,right:3,fontSize:8,fontWeight:700,color:C.ochreDeep,lineHeight:1,backgroundColor:C.ochreSoft,borderRadius:2,padding:'0 1px'}}>1</span>
             </button>
 
             <div style={{width:1,height:18,backgroundColor:C.rule,margin:'0 4px'}}/>
