@@ -151,7 +151,7 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
     if(!api) return
     setSaving(true); setProgress(5)
     try{
-      const {PDFDocument,PDFName,PDFString,PDFNumber}=await import('pdf-lib')
+      const {PDFDocument}=await import('pdf-lib')
       setProgress(15)
       const bytes=await api.readPdf(file.path)
       if(!bytes) throw new Error('Could not read file')
@@ -171,38 +171,64 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
       const newDoc=await PDFDocument.create()
       const copied=await newDoc.copyPages(srcDoc,order)
       copied.forEach(p=>newDoc.addPage(p))
-      setProgress(60)
+      setProgress(70)
 
-      // Map old page indices → new indices for bookmark placement
+      // Add PDF outlines (bookmarks) via raw cross-reference objects
+      // Build entries: for each button, find the new page index after reorder
       const newAssign:Record<number,string>={}
       order.forEach((origIdx,newIdx)=>{ if(assignments[origIdx]) newAssign[newIdx]=assignments[origIdx] })
-
-      // Add PDF outline
-      const entries:{title:string;pageIdx:number}[]=[]
+      const bookmarkEntries:{title:string;pageIdx:number}[]=[]
       for(const btn of buttons){
         for(let i=0;i<newDoc.getPageCount();i++){
-          if(newAssign[i]===btn.id) entries.push({title:btn.label,pageIdx:i})
+          if(newAssign[i]===btn.id) bookmarkEntries.push({title:btn.label,pageIdx:i})
         }
       }
-      if(entries.length>0){
-        const ctx=newDoc.context
-        const pages=newDoc.getPages()
-        const refs=entries.map(({title,pageIdx})=>
-          ctx.register(ctx.obj({Title:PDFString.of(title),Dest:ctx.obj([pages[pageIdx].ref,PDFName.of('Fit')])}))
-        )
-        for(let i=0;i<refs.length;i++){
-          const d=ctx.lookup(refs[i]) as any
-          if(i>0) d.set(PDFName.of('Prev'),refs[i-1])
-          if(i<refs.length-1) d.set(PDFName.of('Next'),refs[i+1])
+      if(bookmarkEntries.length>0){
+        try{
+          const {PDFHexString,PDFName,PDFNumber,PDFDict,PDFArray,PDFRef}=await import('pdf-lib')
+          const ctx=newDoc.context
+          const pages=newDoc.getPages()
+
+          // Create one outline item per bookmark entry
+          const itemRefs:PDFRef[]=bookmarkEntries.map(({title,pageIdx})=>{
+            const dict=PDFDict.withContext(ctx)
+            dict.set(PDFName.of('Title'),PDFHexString.fromText(title))
+            const destArr=PDFArray.withContext(ctx)
+            destArr.push(pages[pageIdx].ref)
+            destArr.push(PDFName.of('Fit'))
+            dict.set(PDFName.of('Dest'),destArr)
+            return ctx.register(dict)
+          })
+
+          // Link items as doubly-linked list
+          itemRefs.forEach((ref,i)=>{
+            const d=ctx.lookup(ref) as PDFDict
+            if(i>0) d.set(PDFName.of('Prev'),itemRefs[i-1])
+            if(i<itemRefs.length-1) d.set(PDFName.of('Next'),itemRefs[i+1])
+          })
+
+          // Outline root
+          const rootDict=PDFDict.withContext(ctx)
+          rootDict.set(PDFName.of('Type'),PDFName.of('Outlines'))
+          rootDict.set(PDFName.of('First'),itemRefs[0])
+          rootDict.set(PDFName.of('Last'),itemRefs[itemRefs.length-1])
+          rootDict.set(PDFName.of('Count'),PDFNumber.of(itemRefs.length))
+          const rootRef=ctx.register(rootDict)
+
+          // Set Parent on each item
+          itemRefs.forEach(ref=>(ctx.lookup(ref) as PDFDict).set(PDFName.of('Parent'),rootRef))
+
+          // Wire into catalog
+          newDoc.catalog.set(PDFName.of('Outlines'),rootRef)
+          newDoc.catalog.set(PDFName.of('PageMode'),PDFName.of('UseOutlines'))
+        }catch(bmErr){
+          console.warn('Bookmark embed failed, saving without outlines:',bmErr)
         }
-        const rootRef=ctx.register(ctx.obj({Type:PDFName.of('Outlines'),First:refs[0],Last:refs[refs.length-1],Count:PDFNumber.of(refs.length)}))
-        refs.forEach(r=>(ctx.lookup(r) as any).set(PDFName.of('Parent'),rootRef))
-        newDoc.catalog.set(PDFName.of('Outlines'),rootRef)
       }
 
-      setProgress(80)
+      setProgress(85)
       const saved=await newDoc.save()
-      setProgress(90)
+      setProgress(92)
       const buf=saved.buffer.slice(saved.byteOffset,saved.byteOffset+saved.byteLength)
       const result=await api.savePdf(file.path,buf)
       if(!result.ok) throw new Error(result.error)
