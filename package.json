@@ -61,7 +61,8 @@
     "publish": {
       "provider": "github",
       "owner": "bsbellomy",
-      "repo": "bellomy-workpapers"
+      "repo": "bellomy-workpapers",
+      "releaseType": "release"
     }
   }
 }
