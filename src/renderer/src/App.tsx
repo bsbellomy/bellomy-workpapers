@@ -112,7 +112,7 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
           if(cancelled) return
           try{
             const pg=await pdf.getPage(i)
-            const vp=pg.getViewport({scale:0.6})
+            const vp=pg.getViewport({scale:1.5})
             const cv=document.createElement('canvas')
             cv.width=Math.round(vp.width); cv.height=Math.round(vp.height)
             const ctx=cv.getContext('2d')
