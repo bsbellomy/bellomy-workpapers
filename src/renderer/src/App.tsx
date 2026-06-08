@@ -151,15 +151,16 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
     if(!api) return
     setSaving(true); setProgress(5)
     try{
-      const {PDFDocument}=await import('pdf-lib')
-      setProgress(15)
+      const {PDFDocument,PDFHexString,PDFName,PDFNumber,PDFDict,PDFArray}=await import('pdf-lib')
+      setProgress(10)
       const bytes=await api.readPdf(file.path)
       if(!bytes) throw new Error('Could not read file')
-      setProgress(25)
+      setProgress(20)
+
+      // ── Pass 1: reorder pages only, save to clean bytes ──────────────────────
       const srcDoc=await PDFDocument.load(bytes)
       const n=srcDoc.getPageCount()
 
-      // Build page order: assigned pages first (in button order), then unassigned
       const assigned:number[]=[]
       for(const btn of buttons){
         for(let i=0;i<n;i++) if(assignments[i]===btn.id&&!assigned.includes(i)) assigned.push(i)
@@ -167,69 +168,71 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
       const unassigned=Array.from({length:n},(_,i)=>i).filter(i=>!assigned.includes(i))
       const order=[...assigned,...unassigned]
 
-      setProgress(40)
-      const newDoc=await PDFDocument.create()
-      const copied=await newDoc.copyPages(srcDoc,order)
-      copied.forEach(p=>newDoc.addPage(p))
-      setProgress(70)
+      setProgress(35)
+      const doc1=await PDFDocument.create()
+      const copiedPages=await doc1.copyPages(srcDoc,order)
+      copiedPages.forEach(p=>doc1.addPage(p))
+      setProgress(55)
+      const cleanBytes=await doc1.save()
+      setProgress(65)
 
-      // Add PDF outlines (bookmarks) via raw cross-reference objects
-      // Build entries: for each button, find the new page index after reorder
+      // ── Pass 2: load clean bytes, add outline, save final ────────────────────
       const newAssign:Record<number,string>={}
       order.forEach((origIdx,newIdx)=>{ if(assignments[origIdx]) newAssign[newIdx]=assignments[origIdx] })
       const bookmarkEntries:{title:string;pageIdx:number}[]=[]
       for(const btn of buttons){
-        for(let i=0;i<newDoc.getPageCount();i++){
-          if(newAssign[i]===btn.id) bookmarkEntries.push({title:btn.label,pageIdx:i})
+        for(let pg=0;pg<order.length;pg++){
+          if(newAssign[pg]===btn.id) bookmarkEntries.push({title:btn.label,pageIdx:pg})
         }
       }
+
+      let finalBytes=cleanBytes
       if(bookmarkEntries.length>0){
         try{
-          const {PDFHexString,PDFName,PDFNumber,PDFDict,PDFArray,PDFRef}=await import('pdf-lib')
-          const ctx=newDoc.context
-          const pages=newDoc.getPages()
+          // Load from the already-serialized clean bytes — fresh context, no copyPages baggage
+          const doc2=await PDFDocument.load(cleanBytes)
+          const ctx=doc2.context
+          const pages2=doc2.getPages()
 
-          // Create one outline item per bookmark entry
-          const itemRefs:PDFRef[]=bookmarkEntries.map(({title,pageIdx})=>{
+          const itemRefs=bookmarkEntries.map(({title,pageIdx})=>{
             const dict=PDFDict.withContext(ctx)
             dict.set(PDFName.of('Title'),PDFHexString.fromText(title))
-            const destArr=PDFArray.withContext(ctx)
-            destArr.push(pages[pageIdx].ref)
-            destArr.push(PDFName.of('Fit'))
-            dict.set(PDFName.of('Dest'),destArr)
+            const dest=PDFArray.withContext(ctx)
+            dest.push(pages2[pageIdx].ref)
+            dest.push(PDFName.of('XYZ'))
+            dest.push(PDFNumber.of(0))   // left
+            dest.push(PDFNumber.of(99999)) // top (big number = top of page)
+            dest.push(PDFNumber.of(0))   // zoom 0 = inherit
+            dict.set(PDFName.of('Dest'),dest)
             return ctx.register(dict)
           })
 
-          // Link items as doubly-linked list
           itemRefs.forEach((ref,i)=>{
             const d=ctx.lookup(ref) as PDFDict
             if(i>0) d.set(PDFName.of('Prev'),itemRefs[i-1])
             if(i<itemRefs.length-1) d.set(PDFName.of('Next'),itemRefs[i+1])
           })
 
-          // Outline root
           const rootDict=PDFDict.withContext(ctx)
           rootDict.set(PDFName.of('Type'),PDFName.of('Outlines'))
           rootDict.set(PDFName.of('First'),itemRefs[0])
           rootDict.set(PDFName.of('Last'),itemRefs[itemRefs.length-1])
           rootDict.set(PDFName.of('Count'),PDFNumber.of(itemRefs.length))
           const rootRef=ctx.register(rootDict)
-
-          // Set Parent on each item
           itemRefs.forEach(ref=>(ctx.lookup(ref) as PDFDict).set(PDFName.of('Parent'),rootRef))
 
-          // Wire into catalog
-          newDoc.catalog.set(PDFName.of('Outlines'),rootRef)
-          newDoc.catalog.set(PDFName.of('PageMode'),PDFName.of('UseOutlines'))
+          doc2.catalog.set(PDFName.of('Outlines'),rootRef)
+          doc2.catalog.set(PDFName.of('PageMode'),PDFName.of('UseOutlines'))
+
+          finalBytes=await doc2.save()
         }catch(bmErr){
-          console.warn('Bookmark embed failed, saving without outlines:',bmErr)
+          console.warn('Bookmark embed skipped:',bmErr)
+          // finalBytes already = cleanBytes, so we still save the reordered PDF safely
         }
       }
 
-      setProgress(85)
-      const saved=await newDoc.save()
-      setProgress(92)
-      const buf=saved.buffer.slice(saved.byteOffset,saved.byteOffset+saved.byteLength)
+      setProgress(90)
+      const buf=finalBytes.buffer.slice(finalBytes.byteOffset,finalBytes.byteOffset+finalBytes.byteLength)
       const result=await api.savePdf(file.path,buf)
       if(!result.ok) throw new Error(result.error)
       setProgress(100)
@@ -299,7 +302,10 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
               {buttons.length===0&&<div style={{color:C.inkFaint,fontSize:11,textAlign:'center',padding:'16px 8px'}}>No buttons yet — add one below.</div>}
               {buttons.map((btn,i)=>(
                 <div key={btn.id} className="flex items-center gap-1">
-                  <button onClick={()=>setAssignments(p=>({...p,[selPage]:btn.id}))}
+                  <button onClick={()=>{
+                    setAssignments(p=>({...p,[selPage]:btn.id}))
+                    setSelPage(p=>Math.min(p+1,pageCount-1))
+                  }}
                     className="flex-1 text-left rounded px-3 py-2 sans"
                     style={{fontSize:12,backgroundColor:C.ochreSoft,color:C.ochreDeep,border:`1px solid ${C.ochreLight}`,fontWeight:600}}>
                     {btn.label}
