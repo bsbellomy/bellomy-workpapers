@@ -805,11 +805,15 @@ function ScanDestModal({clients,rootPath,onClose,onStarted,onFailed}:{clients:st
   const [loading,setLoading]         = useState(false)
   const [starting,setStarting]       = useState(false)
   const [useNativeUI,setUseNativeUI] = useState(true)
+  const [scanDpi,setScanDpi]         = useState(200)
+  const [colorMode,setColorMode]     = useState<'grayscale'|'color'|'bw'>('grayscale')
   const inputRef                     = useRef<HTMLInputElement>(null)
 
-  // Load saved toggle preference
+  // Load saved preferences
   useEffect(()=>{
     api?.getConfig('scanShowUI').then(v=>{ if(v===false) setUseNativeUI(false) })
+    api?.getConfig('scanDpi').then(v=>{ if(typeof v==='number') setScanDpi(v) })
+    api?.getConfig('scanColorMode').then(v=>{ if(v==='color'||v==='bw'||v==='grayscale') setColorMode(v) })
   },[])
 
   useEffect(()=>{inputRef.current?.focus()},[])
@@ -846,7 +850,7 @@ function ScanDestModal({clients,rootPath,onClose,onStarted,onFailed}:{clients:st
     setStarting(true)
     onStarted()  // set scanning=true immediately before the await
     onClose()    // close modal so user can see the scanning indicator
-    const r=await api.startScan(destFolder,useNativeUI)
+    const r=await api.startScan(destFolder,useNativeUI,scanDpi,colorMode)
     if(!r.ok){
       alert('Could not start scan: '+(r.error??'Unknown error'))
       onFailed()  // reset scanning=false if it errors
@@ -907,6 +911,33 @@ function ScanDestModal({clients,rootPath,onClose,onStarted,onFailed}:{clients:st
         <div className="px-5 py-3 flex-shrink-0" style={{borderTop:`1px solid ${C.rule}`,backgroundColor:C.paperDeep}}>
           <div className="flex items-center justify-between mb-2">
             <div className="mono truncate" style={{fontSize:11,color:C.inkMuted,flex:1,marginRight:16}}>{destFolder?`→ ${destFolder}`:'No folder selected'}</div>
+          </div>
+          <div className="flex items-center gap-4 mb-2.5">
+            {/* DPI */}
+            <div className="flex items-center gap-2">
+              <span className="sans" style={{fontSize:11,color:C.inkMuted,whiteSpace:'nowrap'}}>Resolution</span>
+              {([150,200,300] as const).map(d=>(
+                <button key={d} onClick={()=>{setScanDpi(d);api?.setConfig('scanDpi',d)}}
+                  className="px-2 py-0.5 rounded sans"
+                  style={{fontSize:11,fontWeight:scanDpi===d?700:400,border:`1px solid ${scanDpi===d?C.ochre:C.rule}`,backgroundColor:scanDpi===d?C.ochreSoft:C.paper,color:scanDpi===d?C.ochreDeep:C.inkSoft}}>
+                  {d} dpi
+                </button>
+              ))}
+            </div>
+            {/* Color mode */}
+            <div className="flex items-center gap-2">
+              <span className="sans" style={{fontSize:11,color:C.inkMuted,whiteSpace:'nowrap'}}>Color</span>
+              {(['grayscale','bw','color'] as const).map(m=>{
+                const label={grayscale:'Grayscale',bw:'B&W',color:'Color'}[m]
+                return(
+                  <button key={m} onClick={()=>{setColorMode(m);api?.setConfig('scanColorMode',m)}}
+                    className="px-2 py-0.5 rounded sans"
+                    style={{fontSize:11,fontWeight:colorMode===m?700:400,border:`1px solid ${colorMode===m?C.ochre:C.rule}`,backgroundColor:colorMode===m?C.ochreSoft:C.paper,color:colorMode===m?C.ochreDeep:C.inkSoft}}>
+                    {label}
+                  </button>
+                )
+              })}
+            </div>
           </div>
           <div className="flex items-center justify-between">
             {/* UI toggle */}

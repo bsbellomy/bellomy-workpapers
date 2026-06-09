@@ -268,13 +268,17 @@ ipcMain.handle('fs:pickScanner', async () => {
 ipcMain.handle('fs:getScanInbox', () => scanInboxPath())
 
 // ── Start scan via NAPS2.Sdk helper ──────────────────────────────────────────
-ipcMain.handle('fs:startScan', (_e, destFolder: string, useNativeUI: boolean) => {
+ipcMain.handle('fs:startScan', (_e, destFolder: string, useNativeUI: boolean, dpi?: number, colorMode?: string) => {
   const helperPath = getScanHelperPath()
   if (!fs.existsSync(helperPath))
     return Promise.resolve({ ok: false, error: 'Scanner helper not found. Please reinstall the app.' })
 
   const args = ['scan', destFolder]
   if (useNativeUI) args.push('--ui')
+  args.push('--dpi', String(dpi ?? 200))
+  if (colorMode === 'color') args.push('--color')
+  else if (colorMode === 'bw') args.push('--bw')
+  // else default grayscale
 
   return new Promise<{ ok: boolean; error?: string }>(resolve => {
     const child = spawn(helperPath, args)

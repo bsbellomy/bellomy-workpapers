@@ -50,12 +50,25 @@ class Program
     static async Task<int> ScanDocument(ScanningContext ctx, ScanController controller, string[] args)
     {
         if (args.Length < 2)
-            return Error("Usage: scan <dest-folder> [--device <id>] [--ui] [--driver twain|wia]");
+            return Error("Usage: scan <dest-folder> [--device <id>] [--ui] [--driver twain|wia] [--dpi N] [--color|--grayscale|--bw]");
 
         var destFolder  = args[1];
         var deviceId    = GetFlag(args, "--device");
         var useNativeUI = args.Contains("--ui");
         var driver      = ParseDriver(args);
+
+        // Resolution — default 200 dpi (good quality, much smaller than 300)
+        var dpiStr = GetFlag(args, "--dpi");
+        var dpi    = dpiStr != null && int.TryParse(dpiStr, out var d) ? d : 200;
+
+        // Color mode — default grayscale (tax docs don't need color)
+        BitDepth bitDepth;
+        if (args.Contains("--color"))
+            bitDepth = BitDepth.Color;
+        else if (args.Contains("--bw"))
+            bitDepth = BitDepth.BlackAndWhite;
+        else
+            bitDepth = BitDepth.Grayscale; // default
 
         Directory.CreateDirectory(destFolder);
 
@@ -85,6 +98,8 @@ class Program
             Device      = device,
             Driver      = driver,
             UseNativeUI = useNativeUI,
+            Dpi         = dpi,
+            BitDepth    = bitDepth,
         };
 
         var images = new List<ProcessedImage>();
@@ -107,8 +122,13 @@ class Program
             n++;
         }
 
+        var exportParams = new PdfExportParams
+        {
+            Compat = PdfCompat.Default,
+        };
+
         var exporter = new PdfExporter(ctx);
-        await exporter.Export(dest, images, new PdfExportParams());
+        await exporter.Export(dest, images, exportParams);
         foreach (var img in images) img.Dispose();
 
         Console.WriteLine(Json(new { ok = true, path = dest, name = Path.GetFileName(dest), pages = images.Count }));
