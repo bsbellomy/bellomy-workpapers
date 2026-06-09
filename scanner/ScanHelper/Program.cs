@@ -93,13 +93,15 @@ class Program
         }
 
         // ── scan ──────────────────────────────────────────────────────────────
+        // When native UI is shown, PaperStream's profile controls all settings.
+        // Only apply programmatic DPI/color when running silent (quick scan).
         var options = new ScanOptions
         {
             Device      = device,
             Driver      = driver,
             UseNativeUI = useNativeUI,
-            Dpi         = dpi,
-            BitDepth    = bitDepth,
+            Dpi         = useNativeUI ? 0   : dpi,      // 0 = use driver default
+            BitDepth    = useNativeUI ? BitDepth.Color : bitDepth,  // Color = driver default
         };
 
         var images = new List<ProcessedImage>();
