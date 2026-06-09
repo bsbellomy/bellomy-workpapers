@@ -797,7 +797,7 @@ function MoveToDrawerModal({files,clients,rootPath,onClose,onMove}:MoveToDrawerP
 
 // ── Scan Destination Modal ────────────────────────────────────────────────────
 
-function ScanDestModal({clients,rootPath,onClose,onStarted}:{clients:string[];rootPath:string;onClose:()=>void;onStarted:()=>void}){
+function ScanDestModal({clients,rootPath,onClose,onStarted,onFailed}:{clients:string[];rootPath:string;onClose:()=>void;onStarted:()=>void;onFailed:()=>void}){
   const [search,setSearch]           = useState('')
   const [targetClient,setTargetClient] = useState<string|null>(null)
   const [folderTree,setFolderTree]   = useState<(DocFile|DocFolder)[]>([])
@@ -844,12 +844,14 @@ function ScanDestModal({clients,rootPath,onClose,onStarted}:{clients:string[];ro
   async function handleStart(){
     if(!api||!destFolder) return
     setStarting(true)
+    onStarted()  // set scanning=true immediately before the await
+    onClose()    // close modal so user can see the scanning indicator
     const r=await api.startScan(destFolder,useNativeUI)
     if(!r.ok){
       alert('Could not start scan: '+(r.error??'Unknown error'))
-      setStarting(false); return
+      onFailed()  // reset scanning=false if it errors
     }
-    onStarted(); onClose()
+    // on success, scan:fileArrived IPC event resets scanning=false
   }
 
   return(
@@ -1899,7 +1901,7 @@ export default function App(){
 
       {/* ── Scan destination modal ── */}
       {showScanModal&&(
-        <ScanDestModal clients={clients} rootPath={rootPath} onClose={()=>setShowScanModal(false)} onStarted={()=>setScanning(true)}/>
+        <ScanDestModal clients={clients} rootPath={rootPath} onClose={()=>setShowScanModal(false)} onStarted={()=>setScanning(true)} onFailed={()=>setScanning(false)}/>
       )}
 
       {/* ── Scan settings modal ── */}
