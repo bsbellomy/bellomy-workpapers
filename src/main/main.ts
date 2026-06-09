@@ -131,25 +131,32 @@ ipcMain.handle('fs:listClients', async (_e, rootPath: string) => {
   } catch { return [] }
 })
 
-// ── List doc tree (no annotation reads — load those separately on file open) ──
+// ── Shallow one-level read: returns folders (empty children) + files ─────────
+function shallowRead(dir: string): unknown[] {
+  try {
+    const entries = sortedEntries(fs.readdirSync(dir, { withFileTypes: true }))
+    return entries.map(e => {
+      const fullPath = path.join(dir, e.name)
+      if (e.isDirectory()) {
+        if (e.name === 'Private') return null
+        return { name: e.name, type: 'folder', path: fullPath, children: [] }
+      }
+      if (/\.(pdf)$/i.test(e.name)) {
+        return { name: e.name, type: 'file', path: fullPath, annotations: { tickmarks: [], signoffs: [] } }
+      }
+      return null
+    }).filter(Boolean) as unknown[]
+  } catch { return [] }
+}
+
+// ── List doc tree (shallow: top-level only, folders have empty children) ─────
 ipcMain.handle('fs:listDocs', async (_e, clientPath: string) => {
-  function readDir(dir: string): unknown[] {
-    try {
-      const entries = sortedEntries(fs.readdirSync(dir, { withFileTypes: true }))
-      return entries.map(e => {
-        const fullPath = path.join(dir, e.name)
-        if (e.isDirectory()) {
-          if (e.name === 'Private') return null
-          return { name: e.name, type: 'folder', path: fullPath, children: readDir(fullPath) }
-        }
-        if (/\.(pdf)$/i.test(e.name)) {
-          return { name: e.name, type: 'file', path: fullPath, annotations: { tickmarks: [], signoffs: [] } }
-        }
-        return null
-      }).filter(Boolean) as unknown[]
-    } catch { return [] }
-  }
-  return readDir(clientPath)
+  return shallowRead(clientPath)
+})
+
+// ── Load a single folder's direct children (for lazy expand) ─────────────────
+ipcMain.handle('fs:listFolder', async (_e, folderPath: string) => {
+  return shallowRead(folderPath)
 })
 
 // ── Load annotations for a single file (called on file open) ─────────────────
@@ -268,7 +275,7 @@ ipcMain.handle('fs:pickScanner', async () => {
 ipcMain.handle('fs:getScanInbox', () => scanInboxPath())
 
 // ── Start scan via NAPS2.Sdk helper ──────────────────────────────────────────
-ipcMain.handle('fs:startScan', (_e, destFolder: string, useNativeUI: boolean, dpi?: number, colorMode?: string) => {
+ipcMain.handle('fs:startScan', (_e, destFolder: string, useNativeUI: boolean, dpi?: number, colorMode?: string, scanName?: string) => {
   const helperPath = getScanHelperPath()
   if (!fs.existsSync(helperPath))
     return Promise.resolve({ ok: false, error: 'Scanner helper not found. Please reinstall the app.' })
@@ -279,6 +286,7 @@ ipcMain.handle('fs:startScan', (_e, destFolder: string, useNativeUI: boolean, dp
   if (colorMode === 'color') args.push('--color')
   else if (colorMode === 'bw') args.push('--bw')
   // else default grayscale
+  if (scanName) args.push('--name', scanName)
 
   return new Promise<{ ok: boolean; error?: string }>(resolve => {
     const child = spawn(helperPath, args)

@@ -3,6 +3,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 contextBridge.exposeInMainWorld('electronAPI', {
   listClients:     (rootPath: string) => ipcRenderer.invoke('fs:listClients', rootPath),
   listDocs:        (clientPath: string) => ipcRenderer.invoke('fs:listDocs', clientPath),
+  listFolder:      (folderPath: string) => ipcRenderer.invoke('fs:listFolder', folderPath),
   readPdf:         (filePath: string) => ipcRenderer.invoke('fs:readPdf', filePath),
   saveAnnotations: (pdfPath: string, annotations: unknown) => ipcRenderer.invoke('fs:saveAnnotations', pdfPath, annotations),
   moveFile:        (srcPath: string, destFolder: string) => ipcRenderer.invoke('fs:moveFile', srcPath, destFolder),
@@ -11,7 +12,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   combineFiles:    (topPath: string, bottomPath: string) => ipcRenderer.invoke('fs:combineFiles', topPath, bottomPath),
   pickScanner:     () => ipcRenderer.invoke('fs:pickScanner'),
   getScanInbox:    () => ipcRenderer.invoke('fs:getScanInbox'),
-  startScan:        (destFolder: string, useNativeUI: boolean, dpi?: number, colorMode?: string) => ipcRenderer.invoke('fs:startScan', destFolder, useNativeUI, dpi, colorMode),
+  startScan:        (destFolder: string, useNativeUI: boolean, dpi?: number, colorMode?: string, scanName?: string) => ipcRenderer.invoke('fs:startScan', destFolder, useNativeUI, dpi, colorMode, scanName),
   listScanDevices:  () => ipcRenderer.invoke('fs:listScanDevices'),
   stopScanWatcher:  () => ipcRenderer.invoke('fs:stopScanWatcher'),
   onScanFile:       (cb: (data: {name:string}) => void) => ipcRenderer.on('scan:fileArrived', (_e, data) => cb(data)),

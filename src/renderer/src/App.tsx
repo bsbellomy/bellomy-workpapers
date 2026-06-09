@@ -4,13 +4,15 @@ import {
   ChevronRight, ChevronDown, FileSignature, ZoomIn, ZoomOut,
   MessageSquare, PanelRightClose, PanelRightOpen, PanelLeftClose, PanelLeftOpen,
   Clock, Layers, Settings, ScanLine, ArrowLeft, Merge, Printer,
+  RefreshCw, Trash2, Calculator,
 } from 'lucide-react'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-interface Tickmark { id:string; page:number; x:number; y:number; type:string; note:string; author:string; createdAt:string }
-interface Signoff  { page:number; role:string; author:string; signedAt:string }
-interface Annotations { tickmarks:Tickmark[]; signoffs:Signoff[] }
+interface Tickmark  { id:string; page:number; x:number; y:number; type:string; note:string; author:string; createdAt:string }
+interface Signoff   { page:number; role:string; author:string; signedAt:string }
+interface TapeStamp { id:string; page:number; x:number; y:number; entries:{value:number}[]; author:string; createdAt:string }
+interface Annotations { tickmarks:Tickmark[]; signoffs:Signoff[]; tapeStamps?:TapeStamp[] }
 interface DocFile  { name:string; type:'file';   path:string; annotations:Annotations }
 interface DocFolder{ name:string; type:'folder'; path:string; children:(DocFile|DocFolder)[] }
 interface Bookmark { title:string; page:number|null; items:Bookmark[] }
@@ -26,7 +28,8 @@ const api = (window as unknown as { electronAPI?: {
   combineFiles:   (top:string,bot:string)=>Promise<{ok:boolean;error?:string}>
   pickScanner:    ()=>Promise<string|null>
   getScanInbox:   ()=>Promise<string>
-  startScan:       (destFolder:string,useNativeUI:boolean)=>Promise<{ok:boolean;error?:string}>
+  startScan:       (destFolder:string,useNativeUI:boolean,dpi?:number,colorMode?:string,scanName?:string)=>Promise<{ok:boolean;error?:string}>
+  listFolder:      (p:string)=>Promise<(DocFile|DocFolder)[]>
   listScanDevices: ()=>Promise<{ok:boolean;devices:{ID:string;Name:string}[];error?:string}>
   stopScanWatcher: ()=>Promise<void>
   onScanFile:      (cb:(data:{name:string})=>void)=>void
@@ -227,52 +230,87 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
       // ── Pass 2: load clean bytes, add outline, save final ────────────────────
       const newAssign:Record<number,string>={}
       order.forEach((origIdx,newIdx)=>{ if(assignments[origIdx]) newAssign[newIdx]=assignments[origIdx] })
-      const bookmarkEntries:{title:string;pageIdx:number}[]=[]
+      // Build hierarchical bookmark groups: one parent per button, children = each assigned page
+      interface BmGroup { title:string; pages:number[] }
+      const bmGroups:BmGroup[]=[]
       for(const btn of buttons){
-        for(let pg=0;pg<order.length;pg++){
-          if(newAssign[pg]===btn.id) bookmarkEntries.push({title:btn.label,pageIdx:pg})
-        }
+        const pages:number[]=[]
+        for(let pg=0;pg<order.length;pg++) if(newAssign[pg]===btn.id) pages.push(pg)
+        if(pages.length>0) bmGroups.push({title:btn.label,pages})
       }
 
       let finalBytes=cleanBytes
-      if(bookmarkEntries.length>0){
+      if(bmGroups.length>0){
         try{
-          // Load from the already-serialized clean bytes — fresh context, no copyPages baggage
           const doc2=await PDFDocument.load(cleanBytes)
           const ctx=doc2.context
           const pages2=doc2.getPages()
 
-          const itemRefs=bookmarkEntries.map(({title,pageIdx})=>{
-            const dict=PDFDict.withContext(ctx)
-            dict.set(PDFName.of('Title'),PDFHexString.fromText(title))
-            const dest=PDFArray.withContext(ctx)
-            dest.push(pages2[pageIdx].ref)
-            dest.push(PDFName.of('Fit'))  // /Fit is simpler and Acrobat-compatible
-            dict.set(PDFName.of('Dest'),dest)
-            return ctx.register(dict)
+          function makeDest(pageIdx:number){
+            const d=PDFArray.withContext(ctx)
+            d.push(pages2[pageIdx].ref)
+            d.push(PDFName.of('Fit'))
+            return d
+          }
+
+          // Create parent refs (one per button group)
+          const parentRefs=bmGroups.map(g=>{
+            const d=PDFDict.withContext(ctx)
+            d.set(PDFName.of('Title'),PDFHexString.fromText(g.title))
+            d.set(PDFName.of('Dest'),makeDest(g.pages[0]))
+            return ctx.register(d)
           })
 
-          itemRefs.forEach((ref,i)=>{
+          // Create children for groups with >1 page
+          const childRefsByGroup=bmGroups.map((g,gi)=>{
+            if(g.pages.length<=1) return null
+            const refs=g.pages.map((pageIdx,i)=>{
+              const d=PDFDict.withContext(ctx)
+              d.set(PDFName.of('Title'),PDFHexString.fromText(`Page ${i+1}`))
+              d.set(PDFName.of('Dest'),makeDest(pageIdx))
+              return ctx.register(d)
+            })
+            refs.forEach((ref,i)=>{
+              const d=ctx.lookup(ref) as PDFDict
+              d.set(PDFName.of('Parent'),parentRefs[gi])
+              if(i>0) d.set(PDFName.of('Prev'),refs[i-1])
+              if(i<refs.length-1) d.set(PDFName.of('Next'),refs[i+1])
+            })
+            return refs
+          })
+
+          // Wire parent First/Last/Count for groups with children
+          parentRefs.forEach((pRef,gi)=>{
+            const pd=ctx.lookup(pRef) as PDFDict
+            const ch=childRefsByGroup[gi]
+            if(ch&&ch.length>0){
+              pd.set(PDFName.of('First'),ch[0])
+              pd.set(PDFName.of('Last'),ch[ch.length-1])
+              pd.set(PDFName.of('Count'),PDFNumber.of(-ch.length)) // negative = collapsed by default
+            }
+          })
+
+          // Wire parent Prev/Next chain
+          parentRefs.forEach((ref,i)=>{
             const d=ctx.lookup(ref) as PDFDict
-            if(i>0) d.set(PDFName.of('Prev'),itemRefs[i-1])
-            if(i<itemRefs.length-1) d.set(PDFName.of('Next'),itemRefs[i+1])
+            if(i>0) d.set(PDFName.of('Prev'),parentRefs[i-1])
+            if(i<parentRefs.length-1) d.set(PDFName.of('Next'),parentRefs[i+1])
           })
 
+          const totalVisible=bmGroups.reduce((s,g)=>s+(g.pages.length<=1?1:1+g.pages.length),0)
           const rootDict=PDFDict.withContext(ctx)
           rootDict.set(PDFName.of('Type'),PDFName.of('Outlines'))
-          rootDict.set(PDFName.of('First'),itemRefs[0])
-          rootDict.set(PDFName.of('Last'),itemRefs[itemRefs.length-1])
-          rootDict.set(PDFName.of('Count'),PDFNumber.of(itemRefs.length))
+          rootDict.set(PDFName.of('First'),parentRefs[0])
+          rootDict.set(PDFName.of('Last'),parentRefs[parentRefs.length-1])
+          rootDict.set(PDFName.of('Count'),PDFNumber.of(totalVisible))
           const rootRef=ctx.register(rootDict)
-          itemRefs.forEach(ref=>(ctx.lookup(ref) as PDFDict).set(PDFName.of('Parent'),rootRef))
+          parentRefs.forEach(ref=>(ctx.lookup(ref) as PDFDict).set(PDFName.of('Parent'),rootRef))
 
           doc2.catalog.set(PDFName.of('Outlines'),rootRef)
           doc2.catalog.set(PDFName.of('PageMode'),PDFName.of('UseOutlines'))
-
           finalBytes=await doc2.save({useObjectStreams:false})
         }catch(bmErr){
           console.warn('Bookmark embed skipped:',bmErr)
-          // finalBytes already = cleanBytes, so we still save the reordered PDF safely
         }
       }
 
@@ -609,10 +647,13 @@ function EditFolderModal({folder,docTree,onClose,onSaved}:{folder:DocFolder;docT
 interface PdfViewerProps {
   pdfBytes:ArrayBuffer|null; zoom:number; page:number; onPageCount:(n:number)=>void
   annotations:Annotations; activeMark:string
-  onAddTickmark:(t:Omit<Tickmark,'id'|'author'|'createdAt'>)=>void; author:string
+  onAddTickmark:(t:Omit<Tickmark,'id'|'author'|'createdAt'>)=>void
+  onAddTapeStamp:(s:Omit<TapeStamp,'id'|'author'|'createdAt'>)=>void
+  onDeleteTapeStamp:(id:string)=>void
+  author:string
 }
 
-function PdfViewer({pdfBytes,zoom,page,onPageCount,annotations,activeMark,onAddTickmark,author}:PdfViewerProps){
+function PdfViewer({pdfBytes,zoom,page,onPageCount,annotations,activeMark,onAddTickmark,onAddTapeStamp,onDeleteTapeStamp,author}:PdfViewerProps){
   const canvasRef=useRef<HTMLCanvasElement>(null)
   const renderTask=useRef<{cancel:()=>void;promise:Promise<any>}|null>(null)
   const renderSeq=useRef(0) // increments on every render attempt; lets async callbacks detect staleness
@@ -655,19 +696,41 @@ function PdfViewer({pdfBytes,zoom,page,onPageCount,annotations,activeMark,onAddT
     renderPage()
   },[pdfDoc,page,zoom])
 
-  function handleClick(e:React.MouseEvent<HTMLDivElement>){
-    const canvas=canvasRef.current; if(!canvas) return
+  function coordsFromEvent(e:{clientX:number;clientY:number}){
+    const canvas=canvasRef.current; if(!canvas) return null
     const rect=canvas.getBoundingClientRect()
-    const x=((e.clientX-rect.left)/rect.width)*100
-    const y=((e.clientY-rect.top)/rect.height)*100
-    onAddTickmark({page,x,y,type:activeMark,note:author})
+    return {x:((e.clientX-rect.left)/rect.width)*100, y:((e.clientY-rect.top)/rect.height)*100}
+  }
+
+  function handleClick(e:React.MouseEvent<HTMLDivElement>){
+    const c=coordsFromEvent(e); if(!c) return
+    onAddTickmark({page,x:c.x,y:c.y,type:activeMark,note:author})
+  }
+
+  function handleDrop(e:React.DragEvent<HTMLDivElement>){
+    e.preventDefault()
+    const type=e.dataTransfer.getData('type')
+    const c=coordsFromEvent(e); if(!c) return
+    if(type==='tape-stamp'){
+      const entries=JSON.parse(e.dataTransfer.getData('entries')) as {value:number}[]
+      onAddTapeStamp({page,x:c.x,y:c.y,entries})
+    } else if(type==='tape-total'){
+      // legacy fallback: drop just the total as a note
+      const amount=e.dataTransfer.getData('amount')
+      onAddTickmark({page,x:c.x,y:c.y,type:'note',note:amount})
+    }
   }
 
   const pageAnns=annotations.tickmarks.filter(t=>t.page===page)
+  const pageStamps=(annotations.tapeStamps??[]).filter(s=>s.page===page)
   const checkDefs:{[k:string]:{color:string}}=Object.fromEntries(CHECKS.map(c=>[c.id,{color:c.color}]))
 
   return(
-    <div className="relative inline-block" style={{cursor:'crosshair'}} onClick={handleClick}>
+    <div className="relative inline-block" style={{cursor:'crosshair'}}
+      onClick={handleClick}
+      onDragOver={e=>e.preventDefault()}
+      onDrop={handleDrop}
+    >
       {pdfBytes
         ?<canvas ref={canvasRef} style={{display:'block'}}/>
         :<div style={{width:540,minHeight:700,backgroundColor:'#FEFCF7',display:'flex',alignItems:'center',justifyContent:'center',color:C.inkFaint,fontFamily:'Georgia,serif',fontSize:13}}>No document selected</div>
@@ -678,6 +741,43 @@ function PdfViewer({pdfBytes,zoom,page,onPageCount,annotations,activeMark,onAddT
           <div key={tm.id} className="absolute" style={{left:`${tm.x}%`,top:`${tm.y}%`,transform:'translate(-50%,-50%)',pointerEvents:'none',zIndex:10}}>
             <div style={{backgroundColor:def.color,color:'white',fontSize:9,fontWeight:700,padding:'2px 5px',borderRadius:2,boxShadow:`0 2px 4px rgba(26,22,18,0.15),0 0 0 1.5px ${def.color},0 0 0 2.5px ${C.paperLight}`,fontFamily:'JetBrains Mono,monospace'}}>
               ✓ {tm.note}
+            </div>
+          </div>
+        )
+      })}
+      {pageStamps.map(stamp=>{
+        const total=stamp.entries.reduce((s,e)=>s+e.value,0)
+        const fmt=(v:number)=>v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})
+        return(
+          <div key={stamp.id} className="absolute" style={{left:`${stamp.x}%`,top:`${stamp.y}%`,transform:'translate(-10%,-10%)',zIndex:20,pointerEvents:'auto'}}
+            onClick={e=>e.stopPropagation()}
+          >
+            <div style={{backgroundColor:'#FEFCF7',border:'1px solid #bbb',borderRadius:3,boxShadow:'0 2px 8px rgba(26,22,18,0.18)',fontFamily:'JetBrains Mono,monospace',fontSize:10,minWidth:110,maxWidth:160,overflow:'hidden'}}>
+              {/* tape header */}
+              <div style={{backgroundColor:'#1A1612',color:'#F4EFE6',padding:'2px 6px',fontSize:8,letterSpacing:1,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <span>ADDING MACHINE</span>
+                <button onClick={()=>onDeleteTapeStamp(stamp.id)} style={{color:'#A89F92',lineHeight:1,fontSize:10,cursor:'pointer',background:'none',border:'none',padding:0}}>×</button>
+              </div>
+              {/* dashed top */}
+              <div style={{borderTop:'2px dashed #bbb',margin:'0'}}/>
+              {/* entries */}
+              <div style={{padding:'2px 6px'}}>
+                {stamp.entries.map((en,i)=>(
+                  <div key={i} style={{display:'flex',justifyContent:'space-between',padding:'1px 0',borderBottom:'1px dotted #ddd',color:'#1A1612'}}>
+                    <span style={{color:'#A89F92',fontSize:8,width:14}}>{i+1}</span>
+                    <span style={{textAlign:'right',flex:1}}>{fmt(en.value)}</span>
+                  </div>
+                ))}
+              </div>
+              {/* dashed separator */}
+              <div style={{borderTop:'2px dashed #bbb'}}/>
+              {/* total */}
+              <div style={{display:'flex',justifyContent:'space-between',padding:'2px 6px',backgroundColor:'#FAF1D8',fontWeight:700}}>
+                <span style={{color:'#7A5615',fontSize:9}}>Σ</span>
+                <span style={{color:'#1A1612'}}>{fmt(total)}</span>
+              </div>
+              {/* dashed bottom */}
+              <div style={{borderTop:'2px dashed #bbb',borderBottom:'4px solid #1A1612'}}/>
             </div>
           </div>
         )
@@ -699,28 +799,64 @@ function MoveToDrawerModal({files,clients,rootPath,onClose,onMove}:MoveToDrawerP
   const [folderTree,setFolderTree]=useState<(DocFile|DocFolder)[]>([])
   const [destFolder,setDestFolder]=useState<string|null>(null)
   const [loading,setLoading]=useState(false)
+  const [expandedMoveFolders,setExpandedMoveFolders]=useState<Set<string>>(new Set())
+  const [loadedMoveFolders,setLoadedMoveFolders]=useState<Set<string>>(new Set())
   const inputRef=useRef<HTMLInputElement>(null)
+
+  function injectMoveChildren(tree:(DocFile|DocFolder)[],folderPath:string,children:(DocFile|DocFolder)[]): (DocFile|DocFolder)[] {
+    return tree.map(n=>{
+      if(n.type==='folder'){
+        if(n.path===folderPath) return {...n,children}
+        return {...n,children:injectMoveChildren(n.children,folderPath,children)}
+      }
+      return n
+    })
+  }
 
   useEffect(()=>{inputRef.current?.focus()},[])
   useEffect(()=>{
     if(!api||!targetClient) return
-    setLoading(true); setDestFolder(null)
+    setLoading(true); setDestFolder(null); setExpandedMoveFolders(new Set()); setLoadedMoveFolders(new Set())
     const cp=rootPath.replace(/\\$/,'')+`\\${targetClient}`
-    api.listDocs(cp).then(tree=>{setFolderTree(tree);setDestFolder(cp);setLoading(false)})
+    api.listFolder(cp).then(tree=>{
+      setFolderTree(tree); setDestFolder(cp); setLoading(false)
+      const topFolders=tree.filter((n):n is DocFolder=>n.type==='folder')
+      setExpandedMoveFolders(new Set(topFolders.map(f=>f.path)))
+      Promise.all(topFolders.map(f=>api!.listFolder(f.path).then(ch=>({path:f.path,ch})))).then(loaded=>{
+        setFolderTree(prev=>{
+          let t=[...prev]
+          for(const {path:p,ch} of loaded) t=injectMoveChildren(t,p,ch)
+          return t
+        })
+        setLoadedMoveFolders(new Set(topFolders.map(f=>f.path)))
+      })
+    })
   },[targetClient,rootPath])
+
+  async function toggleMoveFolder(p:string){
+    setExpandedMoveFolders(prev=>{const n=new Set(prev);n.has(p)?n.delete(p):n.add(p);return n})
+    if(!loadedMoveFolders.has(p)&&api){
+      const children=await api.listFolder(p)
+      setFolderTree(prev=>injectMoveChildren(prev,p,children))
+      setLoadedMoveFolders(prev=>{const n=new Set(prev);n.add(p);return n})
+    }
+  }
 
   const filtered=clients.filter(c=>c.toLowerCase().includes(search.toLowerCase())).slice(0,60)
 
   function renderFolders(nodes:(DocFile|DocFolder)[],depth=0):React.ReactNode{
     return nodes.filter(n=>n.type==='folder').map(n=>{
-      const f=n as DocFolder; const isSel=destFolder===f.path
+      const f=n as DocFolder; const isSel=destFolder===f.path; const isOpen=expandedMoveFolders.has(f.path)
       return(
         <div key={f.path}>
-          <div className="flex items-center gap-2 cursor-pointer" style={{paddingLeft:12+depth*16,paddingTop:6,paddingBottom:6,paddingRight:12,backgroundColor:isSel?C.ochreSoft:'transparent',borderLeft:isSel?`3px solid ${C.ochre}`:'3px solid transparent',color:isSel?C.ochreDeep:C.inkSoft}} onClick={()=>setDestFolder(f.path)}>
+          <div className="flex items-center gap-1 cursor-pointer" style={{paddingLeft:8+depth*16,paddingTop:6,paddingBottom:6,paddingRight:12,backgroundColor:isSel?C.ochreSoft:'transparent',borderLeft:isSel?`3px solid ${C.ochre}`:'3px solid transparent',color:isSel?C.ochreDeep:C.inkSoft}}>
+            <button onClick={()=>toggleMoveFolder(f.path)} style={{color:C.inkFaint,flexShrink:0,display:'flex',alignItems:'center',padding:'0 2px'}}>
+              {isOpen?<ChevronDown size={11}/>:<ChevronRight size={11}/>}
+            </button>
             <FolderOpen size={13} style={{color:C.ochre,flexShrink:0}}/>
-            <span className="sans truncate" style={{fontSize:13,fontWeight:isSel?600:400}}>{f.name}</span>
+            <span className="sans truncate flex-1" style={{fontSize:13,fontWeight:isSel?600:400}} onClick={()=>setDestFolder(f.path)}>{f.name}</span>
           </div>
-          {renderFolders(f.children,depth+1)}
+          {isOpen&&renderFolders(f.children,depth+1)}
         </div>
       )
     })
@@ -807,6 +943,9 @@ function ScanDestModal({clients,rootPath,onClose,onStarted,onFailed}:{clients:st
   const [useNativeUI,setUseNativeUI] = useState(true)
   const [scanDpi,setScanDpi]         = useState(200)
   const [colorMode,setColorMode]     = useState<'grayscale'|'color'|'bw'>('grayscale')
+  const [scanName,setScanName]       = useState('')
+  const [nameButtons,setNameButtons] = useState<BmBtn[]>([])
+  const [newNameBtn,setNewNameBtn]   = useState('')
   const inputRef                     = useRef<HTMLInputElement>(null)
 
   // Load saved preferences
@@ -814,30 +953,73 @@ function ScanDestModal({clients,rootPath,onClose,onStarted,onFailed}:{clients:st
     api?.getConfig('scanShowUI').then(v=>{ if(v===false) setUseNativeUI(false) })
     api?.getConfig('scanDpi').then(v=>{ if(typeof v==='number') setScanDpi(v) })
     api?.getConfig('scanColorMode').then(v=>{ if(v==='color'||v==='bw'||v==='grayscale') setColorMode(v) })
+    api?.getConfig('scanNameButtons').then(v=>{ if(Array.isArray(v)) setNameButtons(v as BmBtn[]) })
   },[])
+
+  function saveNameButtons(btns:BmBtn[]){ setNameButtons(btns); api?.setConfig('scanNameButtons',btns) }
+  function addNameButton(){ if(!newNameBtn.trim()) return; saveNameButtons([...nameButtons,{id:crypto.randomUUID(),label:newNameBtn.trim()}]); setNewNameBtn('') }
+
+  const [expandedScanFolders,setExpandedScanFolders] = useState<Set<string>>(new Set())
+  const [loadedScanFolders,setLoadedScanFolders]     = useState<Set<string>>(new Set())
+
+  function injectScanChildren(tree:(DocFile|DocFolder)[],folderPath:string,children:(DocFile|DocFolder)[]): (DocFile|DocFolder)[] {
+    return tree.map(n=>{
+      if(n.type==='folder'){
+        if(n.path===folderPath) return {...n,children}
+        return {...n,children:injectScanChildren(n.children,folderPath,children)}
+      }
+      return n
+    })
+  }
 
   useEffect(()=>{inputRef.current?.focus()},[])
   useEffect(()=>{
     if(!api||!targetClient) return
-    setLoading(true); setDestFolder(null)
+    setLoading(true); setDestFolder(null); setExpandedScanFolders(new Set()); setLoadedScanFolders(new Set())
     const cp=rootPath.replace(/\\$/,'')+`\\${targetClient}`
-    api.listDocs(cp).then(tree=>{setFolderTree(tree);setDestFolder(cp);setLoading(false)})
+    api.listFolder(cp).then(tree=>{
+      setFolderTree(tree)
+      setDestFolder(cp)
+      setLoading(false)
+      // auto-expand top-level folders and load their children eagerly
+      const topFolders=tree.filter((n):n is DocFolder=>n.type==='folder')
+      setExpandedScanFolders(new Set(topFolders.map(f=>f.path)))
+      Promise.all(topFolders.map(f=>api!.listFolder(f.path).then(ch=>({path:f.path,ch})))).then(loaded=>{
+        setFolderTree(prev=>{
+          let t=[...prev]
+          for(const {path:p,ch} of loaded) t=injectScanChildren(t,p,ch)
+          return t
+        })
+        setLoadedScanFolders(new Set(topFolders.map(f=>f.path)))
+      })
+    })
   },[targetClient,rootPath])
+
+  async function toggleScanFolder(p:string){
+    setExpandedScanFolders(prev=>{const n=new Set(prev);n.has(p)?n.delete(p):n.add(p);return n})
+    if(!loadedScanFolders.has(p)&&api){
+      const children=await api.listFolder(p)
+      setFolderTree(prev=>injectScanChildren(prev,p,children))
+      setLoadedScanFolders(prev=>{const n=new Set(prev);n.add(p);return n})
+    }
+  }
 
   const filtered=clients.filter(c=>c.toLowerCase().includes(search.toLowerCase())).slice(0,60)
 
   function renderFolders(nodes:(DocFile|DocFolder)[],depth=0):React.ReactNode{
     return nodes.filter(n=>n.type==='folder').map(n=>{
-      const f=n as DocFolder; const isSel=destFolder===f.path
+      const f=n as DocFolder; const isSel=destFolder===f.path; const isOpen=expandedScanFolders.has(f.path)
       return(
         <div key={f.path}>
-          <div className="flex items-center gap-2 cursor-pointer"
-            style={{paddingLeft:12+depth*16,paddingTop:6,paddingBottom:6,paddingRight:12,backgroundColor:isSel?C.ochreSoft:'transparent',borderLeft:isSel?`3px solid ${C.ochre}`:'3px solid transparent',color:isSel?C.ochreDeep:C.inkSoft}}
-            onClick={()=>setDestFolder(f.path)}>
+          <div className="flex items-center gap-1 cursor-pointer"
+            style={{paddingLeft:8+depth*16,paddingTop:6,paddingBottom:6,paddingRight:12,backgroundColor:isSel?C.ochreSoft:'transparent',borderLeft:isSel?`3px solid ${C.ochre}`:'3px solid transparent',color:isSel?C.ochreDeep:C.inkSoft}}>
+            <button onClick={()=>toggleScanFolder(f.path)} style={{color:C.inkFaint,flexShrink:0,display:'flex',alignItems:'center',padding:'0 2px'}}>
+              {isOpen?<ChevronDown size={11}/>:<ChevronRight size={11}/>}
+            </button>
             <FolderOpen size={13} style={{color:C.ochre,flexShrink:0}}/>
-            <span className="sans truncate" style={{fontSize:13,fontWeight:isSel?600:400}}>{f.name}</span>
+            <span className="sans truncate flex-1" style={{fontSize:13,fontWeight:isSel?600:400}} onClick={()=>setDestFolder(f.path)}>{f.name}</span>
           </div>
-          {renderFolders(f.children,depth+1)}
+          {isOpen&&renderFolders(f.children,depth+1)}
         </div>
       )
     })
@@ -850,7 +1032,7 @@ function ScanDestModal({clients,rootPath,onClose,onStarted,onFailed}:{clients:st
     setStarting(true)
     onStarted()  // set scanning=true immediately before the await
     onClose()    // close modal so user can see the scanning indicator
-    const r=await api.startScan(destFolder,useNativeUI,scanDpi,colorMode)
+    const r=await api.startScan(destFolder,useNativeUI,scanDpi,colorMode,scanName.trim()||undefined)
     if(!r.ok){
       alert('Could not start scan: '+(r.error??'Unknown error'))
       onFailed()  // reset scanning=false if it errors
@@ -911,6 +1093,31 @@ function ScanDestModal({clients,rootPath,onClose,onStarted,onFailed}:{clients:st
         <div className="px-5 py-3 flex-shrink-0" style={{borderTop:`1px solid ${C.rule}`,backgroundColor:C.paperDeep}}>
           <div className="flex items-center justify-between mb-2">
             <div className="mono truncate" style={{fontSize:11,color:C.inkMuted,flex:1,marginRight:16}}>{destFolder?`→ ${destFolder}`:'No folder selected'}</div>
+          </div>
+          {/* File name input + name buttons */}
+          <div className="mb-2.5">
+            <div className="flex items-center gap-2 mb-1.5">
+              <input type="text" placeholder="File name (optional — leave blank for auto)" value={scanName} onChange={e=>setScanName(e.target.value)}
+                className="flex-1 outline-none sans px-2 py-1 rounded"
+                style={{fontSize:12,backgroundColor:C.paper,border:`1px solid ${C.rule}`,color:C.ink}}/>
+              {nameButtons.map(b=>(
+                <button key={b.id} onClick={()=>setScanName(b.label)}
+                  className="px-2 py-1 rounded sans flex-shrink-0"
+                  style={{fontSize:11,fontWeight:600,backgroundColor:scanName===b.label?C.ochreSoft:C.paper,border:`1px solid ${scanName===b.label?C.ochre:C.rule}`,color:scanName===b.label?C.ochreDeep:C.inkSoft}}>
+                  {b.label}
+                </button>
+              ))}
+              <div className="flex items-center gap-1 flex-shrink-0" style={{borderLeft:`1px solid ${C.rule}`,paddingLeft:6}}>
+                <input type="text" placeholder="+ name btn" value={newNameBtn} onChange={e=>setNewNameBtn(e.target.value)}
+                  onKeyDown={e=>{if(e.key==='Enter')addNameButton()}}
+                  className="outline-none sans px-1.5 py-1 rounded"
+                  style={{fontSize:11,width:90,backgroundColor:C.paper,border:`1px solid ${C.rule}`,color:C.ink}}/>
+                <button onClick={addNameButton} style={{fontSize:13,color:C.ochre,fontWeight:700,padding:'0 4px'}}>+</button>
+                {nameButtons.length>0&&(
+                  <button onClick={()=>saveNameButtons(nameButtons.slice(0,-1))} style={{fontSize:10,color:C.inkFaint,padding:'0 2px'}} title="Remove last">✕</button>
+                )}
+              </div>
+            </div>
           </div>
           <div className="flex items-center gap-4 mb-2.5">
             {/* DPI */}
@@ -1025,6 +1232,7 @@ export default function App(){
   const [selectedClient,setSelectedClient] = useState<string|null>(null)
   const [docTree,setDocTree]               = useState<(DocFile|DocFolder)[]>([])
   const [expandedFolders,setExpandedFolders] = useState<Set<string>>(new Set())
+  const [loadedFolderPaths,setLoadedFolderPaths] = useState<Set<string>>(new Set())
   const [selectedFile,setSelectedFile]     = useState<DocFile|null>(null)
   const [pdfBytes,setPdfBytes]             = useState<ArrayBuffer|null>(null)
   const [annotations,setAnnotations]       = useState<Annotations>({tickmarks:[],signoffs:[]})
@@ -1058,6 +1266,9 @@ export default function App(){
   const [scanPage,setScanPage]             = useState(0)
   const pendingPageRef = useRef<number|null>(null)
   const pdfScrollRef = useRef<HTMLDivElement|null>(null)
+  const refreshDocsRef = useRef<(delay?:number)=>void>(()=>{})
+  const [tapeEntries,setTapeEntries] = useState<{id:string;value:number}[]>([])
+  const [tapeInput,setTapeInput]     = useState('')
   const author='BC'
 
   // Load clients
@@ -1066,18 +1277,40 @@ export default function App(){
     api.listClients(rootPath).then(setClients)
   },[rootPath])
 
-  // Load doc tree
+  // Helper: replace children of a folder node deep in the tree
+  function injectChildren(tree:(DocFile|DocFolder)[], folderPath:string, children:(DocFile|DocFolder)[]): (DocFile|DocFolder)[] {
+    return tree.map(n=>{
+      if(n.type==='folder'){
+        if(n.path===folderPath) return {...n,children}
+        return {...n,children:injectChildren(n.children,folderPath,children)}
+      }
+      return n
+    })
+  }
+
+  // Load doc tree — shallow top level, then eagerly load each top-level folder in parallel
   const refreshDocs=useCallback((delayMs=0)=>{
     if(!api||!selectedClient) return
     const cp=rootPath.replace(/\\$/,'')+`\\${selectedClient}`
-    setTimeout(()=>{
-      api!.listDocs(cp).then(tree=>{
-        setDocTree(tree)
-        setExpandedFolders(prev=>{
-          if(prev.size===0) return new Set(tree.filter(n=>n.type==='folder').map(n=>n.path))
-          return prev
-        })
+    setTimeout(async ()=>{
+      const topLevel=await api!.listDocs(cp)
+      // Expand top-level folders that were previously expanded (or all on first load)
+      setExpandedFolders(prev=>{
+        if(prev.size===0) return new Set(topLevel.filter(n=>n.type==='folder').map(n=>n.path))
+        return prev
       })
+      setDocTree(topLevel)
+      // Eagerly load all top-level folder contents in parallel
+      const topFolders=topLevel.filter((n):n is DocFolder=>n.type==='folder')
+      if(topFolders.length>0){
+        const loaded=await Promise.all(topFolders.map(f=>api!.listFolder(f.path).then(ch=>({path:f.path,ch}))))
+        setDocTree(prev=>{
+          let t=[...prev]
+          for(const {path:p,ch} of loaded) t=injectChildren(t,p,ch)
+          return t
+        })
+        setLoadedFolderPaths(prev=>{const n=new Set(prev);for(const f of topFolders)n.add(f.path);return n})
+      }
     },delayMs)
   },[selectedClient,rootPath])
 
@@ -1096,6 +1329,9 @@ export default function App(){
     api.getAnnotations(selectedFile.path).then(setAnnotations)
   },[selectedFile])
 
+  // Keep refreshDocsRef current so scan/event listeners always call the latest version
+  useEffect(()=>{ refreshDocsRef.current=refreshDocs },[refreshDocs])
+
   const addTickmark=useCallback((partial:Omit<Tickmark,'id'|'author'|'createdAt'>)=>{
     const tm:Tickmark={...partial,id:crypto.randomUUID(),author,createdAt:new Date().toISOString()}
     setAnnotations(prev=>{
@@ -1104,6 +1340,39 @@ export default function App(){
       return next
     })
   },[author,selectedFile])
+
+  const deleteTickmark=useCallback((id:string)=>{
+    setAnnotations(prev=>{
+      const next={...prev,tickmarks:prev.tickmarks.filter(t=>t.id!==id)}
+      if(api&&selectedFile) api.saveAnnotations(selectedFile.path,next)
+      return next
+    })
+  },[selectedFile])
+
+  const deleteSignoff=useCallback((page:number,role:string)=>{
+    setAnnotations(prev=>{
+      const next={...prev,signoffs:prev.signoffs.filter(s=>!(s.page===page&&s.role===role))}
+      if(api&&selectedFile) api.saveAnnotations(selectedFile.path,next)
+      return next
+    })
+  },[selectedFile])
+
+  const addTapeStamp=useCallback((partial:Omit<TapeStamp,'id'|'author'|'createdAt'>)=>{
+    const stamp:TapeStamp={...partial,id:crypto.randomUUID(),author,createdAt:new Date().toISOString()}
+    setAnnotations(prev=>{
+      const next={...prev,tapeStamps:[...(prev.tapeStamps??[]),stamp]}
+      if(api&&selectedFile) api.saveAnnotations(selectedFile.path,next)
+      return next
+    })
+  },[author,selectedFile])
+
+  const deleteTapeStamp=useCallback((id:string)=>{
+    setAnnotations(prev=>{
+      const next={...prev,tapeStamps:(prev.tapeStamps??[]).filter(s=>s.id!==id)}
+      if(api&&selectedFile) api.saveAnnotations(selectedFile.path,next)
+      return next
+    })
+  },[selectedFile])
 
   // Keyboard shortcuts
   useEffect(()=>{
@@ -1123,14 +1392,14 @@ export default function App(){
     return()=>window.removeEventListener('keydown',onKey)
   },[pageCount,selectedFile,clipboard,api,refreshDocs])
 
-  // Register scan event listeners (once on mount)
+  // Register scan event listeners (once on mount) — use ref so closure always has latest refreshDocs
   useEffect(()=>{
     api?.onScanFile(({name})=>{
       setScanning(false); setScanPage(0)
       const id=crypto.randomUUID()
       setScanToasts(prev=>[...prev,{id,name}])
       setTimeout(()=>setScanToasts(prev=>prev.filter(t=>t.id!==id)),5000)
-      refreshDocs(300)
+      refreshDocsRef.current(300)
     })
     api?.onScanError(err=>{ setScanning(false); setScanPage(0); alert('Scan error: '+err) })
     api?.onScanProgress(({page})=>setScanPage(page))
@@ -1324,8 +1593,14 @@ export default function App(){
 
   const filteredClients=clients.filter(c=>c.toLowerCase().includes(search.toLowerCase()))
 
-  function toggleFolder(p:string){
+  async function toggleFolder(p:string){
     setExpandedFolders(prev=>{const n=new Set(prev);n.has(p)?n.delete(p):n.add(p);return n})
+    // Lazy-load children the first time a folder is expanded
+    if(!loadedFolderPaths.has(p) && api){
+      const children=await api.listFolder(p)
+      setDocTree(prev=>injectChildren(prev,p,children))
+      setLoadedFolderPaths(prev=>{const n=new Set(prev);n.add(p);return n})
+    }
   }
 
   function renderTree(nodes:(DocFile|DocFolder)[],depth=0):React.ReactNode{
@@ -1441,11 +1716,13 @@ export default function App(){
         .tool-btn{display:flex;align-items:center;gap:6px;padding:5px 10px;border-radius:4px;font-size:12px;font-weight:500;cursor:pointer;border:1px solid transparent;transition:all 0.12s}
         .tool-btn:hover{background:rgba(168,119,31,0.08);border-color:${C.ruleSoft}}
         .tool-btn:disabled{opacity:0.35;cursor:not-allowed}
+        .drag-region{-webkit-app-region:drag}
+        .no-drag{-webkit-app-region:no-drag}
       `}</style>
 
       {/* ── Top bar ── */}
-      <div className="flex items-center justify-between px-4 py-2 flex-shrink-0" style={{backgroundColor:C.ink,color:C.paperLight}}>
-        <div className="flex items-center gap-3 min-w-0">
+      <div className="flex items-center justify-between px-4 py-2 flex-shrink-0 drag-region" style={{backgroundColor:C.ink,color:C.paperLight}}>
+        <div className="flex items-center gap-3 min-w-0 no-drag">
           <div className="flex items-center gap-2.5">
             <div style={{width:26,height:26,backgroundColor:C.ochre,display:'flex',alignItems:'center',justifyContent:'center',borderRadius:2}}>
               <span className="serif" style={{fontSize:16,fontWeight:700,color:C.ink,lineHeight:1}}>B</span>
@@ -1464,7 +1741,7 @@ export default function App(){
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-3 text-[10px] flex-shrink-0">
+        <div className="flex items-center gap-3 text-[10px] flex-shrink-0 no-drag">
           <div className="flex items-center gap-1.5">
             <div className="pulse" style={{width:6,height:6,borderRadius:'50%',backgroundColor:'#7DBE5C'}}/>
             <span style={{color:C.inkFaint}}>Synced</span>
@@ -1495,7 +1772,7 @@ export default function App(){
                   onFocus={()=>{
                     if(selectedClient){
                       setSearch('')
-                      setSelectedClient(null);setSelectedFile(null);setDocTree([]);setExpandedFolders(new Set())
+                      setSelectedClient(null);setSelectedFile(null);setDocTree([]);setExpandedFolders(new Set());setLoadedFolderPaths(new Set())
                     }
                   }}
                   onChange={e=>setSearch(e.target.value)}
@@ -1539,6 +1816,9 @@ export default function App(){
                         </span>
                       )}
                       <span className="mono" style={{fontSize:9,color:C.inkFaint}}>{flatFiles(docTree).length}</span>
+                      <button onClick={()=>refreshDocs()} title="Refresh folder" className="p-1 rounded row-hover" style={{color:C.inkFaint,display:'flex',alignItems:'center'}}>
+                        <RefreshCw size={20}/>
+                      </button>
                     </div>
                   </div>
                   <div className="py-1">{renderTree(docTree)}</div>
@@ -1649,7 +1929,7 @@ export default function App(){
             {/* PDF area */}
             <div ref={pdfScrollRef} className="flex-1 overflow-auto p-6 scrollbar-thin" style={{backgroundColor:C.paperDeep}}>
               <div className="mx-auto doc-shadow" style={{width:'fit-content'}}>
-                <PdfViewer pdfBytes={pdfBytes} zoom={zoom} page={currentPage} onPageCount={setPageCount} annotations={annotations} activeMark={activeMark} onAddTickmark={addTickmark} author={author}/>
+                <PdfViewer pdfBytes={pdfBytes} zoom={zoom} page={currentPage} onPageCount={setPageCount} annotations={annotations} activeMark={activeMark} onAddTickmark={addTickmark} onAddTapeStamp={addTapeStamp} onDeleteTapeStamp={deleteTapeStamp} author={author}/>
               </div>
             </div>
 
@@ -1691,20 +1971,69 @@ export default function App(){
                   <button onClick={()=>setRightOpen(false)} className="p-2" style={{color:C.inkMuted}}><PanelRightClose size={12}/></button>
                 </div>
 
-                {showCalculator&&(
-                  <div style={{borderBottom:`1px solid ${C.rule}`}}>
-                    <div className="px-3 py-1.5 flex items-center justify-between" style={{backgroundColor:C.ink,color:C.paperLight}}>
-                      <span className="serif" style={{fontSize:10,fontWeight:600}}>Calculator Tape</span>
-                      <button className="mono" style={{fontSize:9,color:C.inkFaint}}>clear</button>
-                    </div>
-                    <div className="p-2" style={{fontFamily:'JetBrains Mono,monospace',fontSize:10,backgroundColor:'#FEFCF7'}}>
-                      <div style={{color:C.inkMuted,padding:'4px',borderBottom:`1px dotted ${C.rule}`,fontSize:9}}>Click numbers in PDF to add</div>
-                      <div className="flex justify-between py-1.5 px-1 mt-1" style={{borderTop:`2px solid ${C.ink}`,backgroundColor:C.ochreSoft,fontWeight:700}}>
-                        <span>Σ TOTAL</span><span>0.00</span>
+                {showCalculator&&(()=>{
+                  const total=tapeEntries.reduce((s,e)=>s+e.value,0)
+                  const totalStr=total.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})
+                  const fmt=(v:number)=>v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})
+                  function addEntry(){
+                    const v=parseFloat(tapeInput.replace(/,/g,''))
+                    if(isNaN(v)) return
+                    setTapeEntries(prev=>[...prev,{id:crypto.randomUUID(),value:v}])
+                    setTapeInput('')
+                  }
+                  const canDrag=tapeEntries.length>0
+                  return(
+                    <div style={{borderBottom:`1px solid ${C.rule}`,maxHeight:280,display:'flex',flexDirection:'column'}}>
+                      {/* Header — draggable when entries exist */}
+                      <div
+                        draggable={canDrag}
+                        onDragStart={ev=>{
+                          ev.dataTransfer.setData('type','tape-stamp')
+                          ev.dataTransfer.setData('entries',JSON.stringify(tapeEntries.map(e=>({value:e.value}))))
+                        }}
+                        className="px-3 py-1.5 flex items-center justify-between flex-shrink-0"
+                        style={{backgroundColor:C.ink,color:C.paperLight,cursor:canDrag?'grab':'default'}}
+                        title={canDrag?'Drag tape onto PDF to stamp it':''}
+                      >
+                        <span className="serif" style={{fontSize:10,fontWeight:600}}>
+                          {canDrag?'⠿ Drag Tape →':'Adding Machine Tape'}
+                        </span>
+                        <button onClick={()=>setTapeEntries([])} className="mono no-drag" style={{fontSize:9,color:C.inkFaint}}>clear</button>
+                      </div>
+                      {/* Entry list */}
+                      <div className="flex-1 overflow-y-auto" style={{fontFamily:'JetBrains Mono,monospace',fontSize:11,backgroundColor:'#FEFCF7',scrollbarWidth:'thin'}}>
+                        {tapeEntries.length===0&&(
+                          <div style={{color:C.inkMuted,padding:'6px 8px',fontSize:9}}>Type an amount and press Enter to add it.</div>
+                        )}
+                        {tapeEntries.map((e,i)=>(
+                          <div key={e.id} className="flex items-center justify-between px-2 py-0.5 row-hover" style={{borderBottom:`1px dotted ${C.ruleSoft}`}}>
+                            <span style={{color:C.inkFaint,fontSize:9,width:16}}>{i+1}</span>
+                            <span style={{color:C.ink,flex:1,textAlign:'right'}}>{fmt(e.value)}</span>
+                            <button onClick={()=>setTapeEntries(prev=>prev.filter(x=>x.id!==e.id))} style={{color:C.inkFaint,marginLeft:4,lineHeight:1}}><X size={9}/></button>
+                          </div>
+                        ))}
+                      </div>
+                      {/* Total line */}
+                      <div className="flex justify-between px-2 py-1.5 flex-shrink-0"
+                        style={{borderTop:`2px solid ${C.ink}`,backgroundColor:C.ochreSoft,fontWeight:700,fontFamily:'JetBrains Mono,monospace',fontSize:11}}>
+                        <span style={{color:C.ochreDeep}}>Σ</span>
+                        <span style={{color:C.ink}}>{totalStr}</span>
+                      </div>
+                      {/* Input */}
+                      <div className="flex gap-1 px-2 py-1.5 flex-shrink-0" style={{borderTop:`1px solid ${C.ruleSoft}`,backgroundColor:C.paper}}>
+                        <input
+                          type="text" placeholder="0.00" value={tapeInput}
+                          onChange={e=>setTapeInput(e.target.value)}
+                          onKeyDown={e=>{ if(e.key==='Enter') addEntry(); if(e.key==='Escape') setTapeInput('') }}
+                          className="flex-1 outline-none mono px-1.5 py-1 rounded"
+                          style={{fontSize:12,backgroundColor:C.paperDeep,border:`1px solid ${C.rule}`,color:C.ink,textAlign:'right'}}
+                          autoFocus
+                        />
+                        <button onClick={addEntry} className="px-2 py-1 rounded sans" style={{fontSize:11,backgroundColor:C.ochre,color:C.paperLight,fontWeight:700}}>+</button>
                       </div>
                     </div>
-                  </div>
-                )}
+                  )
+                })()}
 
                 <div className="flex-1 overflow-y-auto scrollbar-thin">
                   {rightTab==='notes'&&(
@@ -1720,7 +2049,8 @@ export default function App(){
                             <div className="p-2.5 pl-3">
                               <div className="flex items-center gap-1.5 mb-1">
                                 <Check size={11} style={{color:def.color,flexShrink:0}} strokeWidth={3}/>
-                                <div className="serif" style={{fontSize:11,fontWeight:700,color:C.ink}}>{def.label}</div>
+                                <div className="serif flex-1" style={{fontSize:11,fontWeight:700,color:C.ink}}>{def.label}</div>
+                                <button onClick={()=>deleteTickmark(tm.id)} style={{color:C.inkFaint,padding:'0 2px'}} title="Delete mark"><Trash2 size={10}/></button>
                               </div>
                               <div className="mono" style={{fontSize:9,color:C.inkSoft}}>{tm.note} · pg {tm.page} · {new Date(tm.createdAt).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</div>
                             </div>
@@ -1747,10 +2077,11 @@ export default function App(){
                                 <div style={{width:18,height:18,borderRadius:'50%',backgroundColor:so?'#5C8A3A':'transparent',border:so?'none':`1.5px dashed ${C.rule}`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
                                   {so&&<Check size={10} strokeWidth={3} style={{color:'white'}}/>}
                                 </div>
-                                <div>
+                                <div className="flex-1">
                                   <div className="sans" style={{fontSize:10,color:C.ink,fontWeight:600}}>{role}</div>
                                   <div className="mono" style={{fontSize:8,color:C.inkMuted}}>{so?`${so.author} · ${new Date(so.signedAt).toLocaleDateString()}`:'pending'}</div>
                                 </div>
+                                {so&&<button onClick={()=>deleteSignoff(currentPage,role)} style={{color:C.inkFaint}} title="Remove signoff"><Trash2 size={10}/></button>}
                               </div>
                             )
                           })}
