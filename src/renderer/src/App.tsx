@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import {
   Search, FolderOpen, FolderClosed, FileText, Check, X,
-  ChevronRight, ChevronDown, FileSignature, ZoomIn, ZoomOut,
+  ChevronRight, ChevronDown, FileSignature, ZoomIn, ZoomOut, Maximize2,
   MessageSquare, PanelRightClose, PanelRightOpen, PanelLeftClose, PanelLeftOpen,
   Clock, Layers, Settings, ScanLine, ArrowLeft, Merge, Printer,
   RefreshCw, Trash2, Calculator,
@@ -28,7 +28,7 @@ const api = (window as unknown as { electronAPI?: {
   combineFiles:   (top:string,bot:string)=>Promise<{ok:boolean;error?:string}>
   pickScanner:    ()=>Promise<string|null>
   getScanInbox:   ()=>Promise<string>
-  startScan:       (destFolder:string,useNativeUI:boolean,dpi?:number,colorMode?:string,scanName?:string)=>Promise<{ok:boolean;error?:string}>
+  startScan:       (destFolder:string,useNativeUI:boolean,dpi?:number,colorMode?:string,scanName?:string,skipBlank?:boolean)=>Promise<{ok:boolean;error?:string}>
   listFolder:      (p:string)=>Promise<(DocFile|DocFolder)[]>
   listScanDevices: ()=>Promise<{ok:boolean;devices:{ID:string;Name:string}[];error?:string}>
   stopScanWatcher: ()=>Promise<void>
@@ -104,13 +104,21 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
   const [saving,setSaving]           = useState(false)
   const [progress,setProgress]       = useState(0)
   const [loadError,setLoadError]     = useState<string|null>(null)
+  const [thumbZoom,setThumbZoom]     = useState(160)
   const pageListRef                  = useRef<HTMLDivElement|null>(null)
   const pageItemRefs                 = useRef<(HTMLDivElement|null)[]>([])
 
-  // Load buttons from persistent config file on first open
+  // Load buttons + thumbnail zoom from persistent config file on first open
   useEffect(()=>{
     api?.getConfig('bookmarkButtons').then(b=>{ if(Array.isArray(b)) setButtons(b as BmBtn[]) })
+    api?.getConfig('editorThumbZoom').then(v=>{ if(typeof v==='number'&&v>0) setThumbZoom(v) })
   },[])
+
+  function changeThumbZoom(v:number){
+    const clamped=Math.max(80,Math.min(900,v))
+    setThumbZoom(clamped)
+    api?.setConfig('editorThumbZoom',clamped)
+  }
 
   // Scroll newly selected page into view at the top of the list
   useEffect(()=>{
@@ -339,15 +347,19 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
             <div className="px-4 py-2 flex-shrink-0 flex items-center gap-3" style={{borderBottom:`1px solid ${C.ruleSoft}`,backgroundColor:C.paperDeep}}>
               <span className="sans" style={{fontSize:11,color:C.inkMuted,letterSpacing:0.5,textTransform:'uppercase',fontWeight:600}}>Pages</span>
               {loading&&<span className="sans" style={{fontSize:10,color:C.inkFaint}}>Loading thumbnails… {loadPct}%</span>}
+              <div className="flex items-center gap-1" style={{marginLeft:'auto'}}>
+                <button onClick={()=>changeThumbZoom(thumbZoom-30)} title="Smaller thumbnails" style={{color:C.inkFaint,padding:'2px 4px'}}><ZoomOut size={12}/></button>
+                <button onClick={()=>changeThumbZoom(thumbZoom+30)} title="Larger thumbnails" style={{color:C.inkFaint,padding:'2px 4px'}}><ZoomIn size={12}/></button>
+              </div>
             </div>
-            <div className="flex-1 overflow-y-auto p-3" style={{display:'flex',flexDirection:'column',gap:8}}>
+            <div className="flex-1 overflow-y-auto p-3" style={{display:'flex',flexWrap:'wrap',alignContent:'flex-start',gap:8}}>
               {loadError?(
                 <div style={{gridColumn:'1/-1',padding:24,color:'#B5443A',fontSize:12,lineHeight:1.6}}>
                   <div style={{fontWeight:600,marginBottom:6}}>Failed to load PDF</div>
                   <div style={{fontFamily:'monospace',fontSize:11,backgroundColor:'#FFF5F5',padding:10,borderRadius:4,border:'1px solid #F5C6C6',wordBreak:'break-all'}}>{loadError}</div>
                 </div>
               ):loading?(
-                <div style={{textAlign:'center',padding:40,color:C.inkFaint,fontSize:12}}>
+                <div style={{textAlign:'center',padding:40,color:C.inkFaint,fontSize:12,width:'100%'}}>
                   <div style={{marginBottom:8}}>Rendering pages… {loadPct}%</div>
                   <div style={{height:4,backgroundColor:C.ruleSoft,borderRadius:2,overflow:'hidden'}}>
                     <div style={{height:'100%',backgroundColor:C.ochre,width:`${loadPct}%`,transition:'width 0.2s'}}/>
@@ -355,7 +367,7 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
                 </div>
               ):Array.from({length:pageCount},(_,i)=>(
                 <div key={i} ref={el=>{pageItemRefs.current[i]=el}} onClick={()=>setSelPage(i)} className="rounded cursor-pointer"
-                  style={{border:`2px solid ${selPage===i?C.ochre:C.ruleSoft}`,backgroundColor:selPage===i?C.ochreSoft:'transparent',overflow:'hidden',flexShrink:0}}>
+                  style={{width:thumbZoom,border:`2px solid ${selPage===i?C.ochre:C.ruleSoft}`,backgroundColor:selPage===i?C.ochreSoft:'transparent',overflow:'hidden',flexShrink:0}}>
                   {thumbs[i]
                     ?<img src={thumbs[i]} style={{width:'100%',height:'auto',display:'block'}} alt=""/>
                     :<div style={{width:'100%',aspectRatio:'8.5/11',backgroundColor:C.paperDeep}}/>
@@ -386,8 +398,8 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
             <div className="px-4 py-2 flex-shrink-0" style={{borderBottom:`1px solid ${C.ruleSoft}`,backgroundColor:C.paperDeep}}>
               <span className="sans" style={{fontSize:11,color:C.inkMuted,letterSpacing:0.5,textTransform:'uppercase',fontWeight:600}}>Bookmark Buttons</span>
             </div>
-            <div className="flex-1 overflow-y-auto p-3" style={{display:'flex',flexDirection:'column',gap:4}}>
-              {buttons.length===0&&<div style={{color:C.inkFaint,fontSize:11,textAlign:'center',padding:'16px 8px'}}>No buttons yet — add one below.</div>}
+            <div className="flex-1 overflow-y-auto p-3" style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(110px,1fr))',gap:4,alignContent:'start'}}>
+              {buttons.length===0&&<div style={{gridColumn:'1/-1',color:C.inkFaint,fontSize:11,textAlign:'center',padding:'16px 8px'}}>No buttons yet — add one below.</div>}
               {buttons.map((btn,i)=>(
                 <div key={btn.id} className="flex items-center gap-1">
                   <button onClick={()=>{
@@ -642,18 +654,46 @@ function EditFolderModal({folder,docTree,onClose,onSaved}:{folder:DocFolder;docT
   )
 }
 
+// Returns today's date formatted as MM-DD-YYYY
+function todayStr(){
+  const d=new Date()
+  const mm=String(d.getMonth()+1).padStart(2,'0')
+  const dd=String(d.getDate()).padStart(2,'0')
+  const yyyy=d.getFullYear()
+  return `${mm}-${dd}-${yyyy}`
+}
+
+// Generates a CSS clip-path polygon with a torn-paper zigzag along the top and bottom edges
+function tornClipPath(teeth=9, depth=5){
+  const pts:string[]=[]
+  for(let i=0;i<=teeth;i++){
+    const x=(i/teeth)*100
+    const y=i%2===0?0:depth
+    pts.push(`${x}% ${y}%`)
+  }
+  for(let i=teeth;i>=0;i--){
+    const x=(i/teeth)*100
+    const y=i%2===0?100:100-depth
+    pts.push(`${x}% ${y}%`)
+  }
+  return `polygon(${pts.join(',')})`
+}
+
 // ── PDF Viewer ────────────────────────────────────────────────────────────────
 
 interface PdfViewerProps {
   pdfBytes:ArrayBuffer|null; zoom:number; page:number; onPageCount:(n:number)=>void
+  onPageSize?:(w:number,h:number)=>void
   annotations:Annotations; activeMark:string
   onAddTickmark:(t:Omit<Tickmark,'id'|'author'|'createdAt'>)=>void
   onAddTapeStamp:(s:Omit<TapeStamp,'id'|'author'|'createdAt'>)=>void
   onDeleteTapeStamp:(id:string)=>void
+  onMoveTapeStamp:(id:string,x:number,y:number)=>void
   author:string
 }
 
-function PdfViewer({pdfBytes,zoom,page,onPageCount,annotations,activeMark,onAddTickmark,onAddTapeStamp,onDeleteTapeStamp,author}:PdfViewerProps){
+function PdfViewer({pdfBytes,zoom,page,onPageCount,onPageSize,annotations,activeMark,onAddTickmark,onAddTapeStamp,onDeleteTapeStamp,onMoveTapeStamp,author}:PdfViewerProps){
+  const [dragStamp,setDragStamp]=useState<{id:string;x:number;y:number}|null>(null)
   const canvasRef=useRef<HTMLCanvasElement>(null)
   const renderTask=useRef<{cancel:()=>void;promise:Promise<any>}|null>(null)
   const renderSeq=useRef(0) // increments on every render attempt; lets async callbacks detect staleness
@@ -684,6 +724,8 @@ function PdfViewer({pdfBytes,zoom,page,onPageCount,annotations,activeMark,onAddT
       try{
         const pdfPage=await pdfDoc.getPage(Math.min(page,pdfDoc.numPages))
         if(renderSeq.current!==seq) return // a newer render was requested; discard
+        const baseVp=pdfPage.getViewport({scale:1})
+        onPageSize?.(baseVp.width,baseVp.height)
         const scale=zoom/100
         const viewport=pdfPage.getViewport({scale})
         const canvas=canvasRef.current; if(!canvas) return
@@ -702,7 +744,29 @@ function PdfViewer({pdfBytes,zoom,page,onPageCount,annotations,activeMark,onAddT
     return {x:((e.clientX-rect.left)/rect.width)*100, y:((e.clientY-rect.top)/rect.height)*100}
   }
 
+  function startDragStamp(e:React.MouseEvent,stamp:TapeStamp){
+    e.stopPropagation()
+    e.preventDefault()
+    const canvas=canvasRef.current; if(!canvas) return
+    const rect=canvas.getBoundingClientRect()
+    const clamp=(v:number)=>Math.max(0,Math.min(100,v))
+    function posFrom(ev:MouseEvent){
+      return {x:clamp(((ev.clientX-rect.left)/rect.width)*100), y:clamp(((ev.clientY-rect.top)/rect.height)*100)}
+    }
+    function onMove(ev:MouseEvent){ setDragStamp({id:stamp.id,...posFrom(ev)}) }
+    function onUp(ev:MouseEvent){
+      window.removeEventListener('mousemove',onMove)
+      window.removeEventListener('mouseup',onUp)
+      const p=posFrom(ev)
+      onMoveTapeStamp(stamp.id,p.x,p.y)
+      setDragStamp(null)
+    }
+    window.addEventListener('mousemove',onMove)
+    window.addEventListener('mouseup',onUp)
+  }
+
   function handleClick(e:React.MouseEvent<HTMLDivElement>){
+    if(!activeMark) return // no mark type selected — clicking does nothing
     const c=coordsFromEvent(e); if(!c) return
     onAddTickmark({page,x:c.x,y:c.y,type:activeMark,note:author})
   }
@@ -726,7 +790,7 @@ function PdfViewer({pdfBytes,zoom,page,onPageCount,annotations,activeMark,onAddT
   const checkDefs:{[k:string]:{color:string}}=Object.fromEntries(CHECKS.map(c=>[c.id,{color:c.color}]))
 
   return(
-    <div className="relative inline-block" style={{cursor:'crosshair'}}
+    <div className="relative inline-block" style={{cursor:activeMark?'crosshair':'default'}}
       onClick={handleClick}
       onDragOver={e=>e.preventDefault()}
       onDrop={handleDrop}
@@ -748,36 +812,46 @@ function PdfViewer({pdfBytes,zoom,page,onPageCount,annotations,activeMark,onAddT
       {pageStamps.map(stamp=>{
         const total=stamp.entries.reduce((s,e)=>s+e.value,0)
         const fmt=(v:number)=>v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})
+        const pos=dragStamp&&dragStamp.id===stamp.id?dragStamp:stamp
         return(
-          <div key={stamp.id} className="absolute" style={{left:`${stamp.x}%`,top:`${stamp.y}%`,transform:'translate(-10%,-10%)',zIndex:20,pointerEvents:'auto'}}
+          <div key={stamp.id} className="absolute" style={{left:`${pos.x}%`,top:`${pos.y}%`,transform:'translate(-10%,-6%)',zIndex:20,pointerEvents:'auto',cursor:'move'}}
             onClick={e=>e.stopPropagation()}
+            onMouseDown={e=>startDragStamp(e,stamp)}
           >
-            <div style={{backgroundColor:'#FEFCF7',border:'1px solid #bbb',borderRadius:3,boxShadow:'0 2px 8px rgba(26,22,18,0.18)',fontFamily:'JetBrains Mono,monospace',fontSize:10,minWidth:110,maxWidth:160,overflow:'hidden'}}>
+            {/* paper clip — half visible, clipped onto the top edge of the tape */}
+            <svg width="28" height="34" viewBox="0 0 28 34" style={{position:'absolute',top:-16,left:18,zIndex:1,filter:'drop-shadow(0 2px 2px rgba(0,0,0,0.25))',pointerEvents:'none'}}>
+              <path d="M8 34 V10 a6 6 0 0 1 12 0 V26 a3 3 0 0 1 -6 0 V12" fill="none" stroke="#9AA3AD" strokeWidth="3" strokeLinecap="round"/>
+              <path d="M8 34 V10 a6 6 0 0 1 12 0 V26 a3 3 0 0 1 -6 0 V12" fill="none" stroke="#C8CED4" strokeWidth="1.2" strokeLinecap="round"/>
+            </svg>
+            <div style={{
+              backgroundColor:'#FFFEFA',
+              backgroundImage:'repeating-linear-gradient(to bottom, rgba(0,0,0,0.025) 0px, rgba(0,0,0,0.025) 1px, transparent 1px, transparent 4px)',
+              clipPath:tornClipPath(9,3),
+              filter:'drop-shadow(0 4px 8px rgba(26,22,18,0.3))',
+              fontFamily:'JetBrains Mono,monospace',fontSize:13,minWidth:160,maxWidth:220,overflow:'hidden',
+              padding:'18px 10px 20px',position:'relative'
+            }}>
               {/* tape header */}
-              <div style={{backgroundColor:'#1A1612',color:'#F4EFE6',padding:'2px 6px',fontSize:8,letterSpacing:1,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-                <span>ADDING MACHINE</span>
-                <button onClick={()=>onDeleteTapeStamp(stamp.id)} style={{color:'#A89F92',lineHeight:1,fontSize:10,cursor:'pointer',background:'none',border:'none',padding:0}}>×</button>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',paddingBottom:4,marginBottom:4,borderBottom:'1px dashed #ccc'}}>
+                <span style={{fontSize:10,letterSpacing:1.5,color:'#A89F92',fontWeight:700}}>ADDING MACHINE</span>
+                <button onMouseDown={e=>e.stopPropagation()} onClick={()=>onDeleteTapeStamp(stamp.id)} style={{color:'#C9A227',lineHeight:1,fontSize:15,cursor:'pointer',background:'none',border:'none',padding:0}}>×</button>
               </div>
-              {/* dashed top */}
-              <div style={{borderTop:'2px dashed #bbb',margin:'0'}}/>
               {/* entries */}
-              <div style={{padding:'2px 6px'}}>
+              <div>
                 {stamp.entries.map((en,i)=>(
-                  <div key={i} style={{display:'flex',justifyContent:'space-between',padding:'1px 0',borderBottom:'1px dotted #ddd',color:'#1A1612'}}>
-                    <span style={{color:'#A89F92',fontSize:8,width:14}}>{i+1}</span>
+                  <div key={i} style={{display:'flex',justifyContent:'space-between',padding:'2px 0',color:'#1A1612'}}>
+                    <span style={{color:'#A89F92',fontSize:10,width:18}}>{i+1}</span>
                     <span style={{textAlign:'right',flex:1}}>{fmt(en.value)}</span>
                   </div>
                 ))}
               </div>
               {/* dashed separator */}
-              <div style={{borderTop:'2px dashed #bbb'}}/>
+              <div style={{borderTop:'1px dashed #ccc',margin:'4px 0'}}/>
               {/* total */}
-              <div style={{display:'flex',justifyContent:'space-between',padding:'2px 6px',backgroundColor:'#FAF1D8',fontWeight:700}}>
-                <span style={{color:'#7A5615',fontSize:9}}>Σ</span>
+              <div style={{display:'flex',justifyContent:'space-between',fontWeight:700,fontSize:14}}>
+                <span style={{color:'#7A5615'}}>Σ</span>
                 <span style={{color:'#1A1612'}}>{fmt(total)}</span>
               </div>
-              {/* dashed bottom */}
-              <div style={{borderTop:'2px dashed #bbb',borderBottom:'4px solid #1A1612'}}/>
             </div>
           </div>
         )
@@ -943,6 +1017,7 @@ function ScanDestModal({clients,rootPath,onClose,onStarted,onFailed}:{clients:st
   const [useNativeUI,setUseNativeUI] = useState(true)
   const [scanDpi,setScanDpi]         = useState(200)
   const [colorMode,setColorMode]     = useState<'grayscale'|'color'|'bw'>('grayscale')
+  const [skipBlank,setSkipBlank]     = useState(false)
   const [scanName,setScanName]       = useState('')
   const [nameButtons,setNameButtons] = useState<BmBtn[]>([])
   const [newNameBtn,setNewNameBtn]   = useState('')
@@ -953,6 +1028,7 @@ function ScanDestModal({clients,rootPath,onClose,onStarted,onFailed}:{clients:st
     api?.getConfig('scanShowUI').then(v=>{ if(v===false) setUseNativeUI(false) })
     api?.getConfig('scanDpi').then(v=>{ if(typeof v==='number') setScanDpi(v) })
     api?.getConfig('scanColorMode').then(v=>{ if(v==='color'||v==='bw'||v==='grayscale') setColorMode(v) })
+    api?.getConfig('scanSkipBlank').then(v=>{ if(typeof v==='boolean') setSkipBlank(v) })
     api?.getConfig('scanNameButtons').then(v=>{ if(Array.isArray(v)) setNameButtons(v as BmBtn[]) })
   },[])
 
@@ -1032,7 +1108,7 @@ function ScanDestModal({clients,rootPath,onClose,onStarted,onFailed}:{clients:st
     setStarting(true)
     onStarted()  // set scanning=true immediately before the await
     onClose()    // close modal so user can see the scanning indicator
-    const r=await api.startScan(destFolder,useNativeUI,scanDpi,colorMode,scanName.trim()||undefined)
+    const r=await api.startScan(destFolder,useNativeUI,scanDpi,colorMode,scanName.trim()||undefined,skipBlank)
     if(!r.ok){
       alert('Could not start scan: '+(r.error??'Unknown error'))
       onFailed()  // reset scanning=false if it errors
@@ -1096,10 +1172,15 @@ function ScanDestModal({clients,rootPath,onClose,onStarted,onFailed}:{clients:st
           </div>
           {/* File name input + name buttons */}
           <div className="mb-2.5">
-            <div className="flex items-center gap-2 mb-1.5">
-              <input type="text" placeholder="File name (optional — leave blank for auto)" value={scanName} onChange={e=>setScanName(e.target.value)}
-                className="flex-1 outline-none sans px-2 py-1 rounded"
-                style={{fontSize:12,backgroundColor:C.paper,border:`1px solid ${C.rule}`,color:C.ink}}/>
+            <input type="text" placeholder="File name (optional — leave blank for auto)" value={scanName} onChange={e=>setScanName(e.target.value)}
+              className="w-full outline-none sans px-2 py-1 rounded mb-1.5"
+              style={{fontSize:12,backgroundColor:C.paper,border:`1px solid ${C.rule}`,color:C.ink}}/>
+            <div className="flex items-center flex-wrap gap-1.5">
+              <button onClick={()=>setScanName(todayStr())}
+                className="px-2 py-1 rounded sans flex-shrink-0"
+                style={{fontSize:11,fontWeight:600,backgroundColor:C.paper,border:`1px solid ${C.rule}`,color:C.inkSoft}}>
+                📅 Today
+              </button>
               {nameButtons.map(b=>(
                 <button key={b.id} onClick={()=>setScanName(b.label)}
                   className="px-2 py-1 rounded sans flex-shrink-0"
@@ -1145,6 +1226,11 @@ function ScanDestModal({clients,rootPath,onClose,onStarted,onFailed}:{clients:st
                 )
               })}
             </div>
+            {/* Skip blank pages */}
+            <label className="flex items-center gap-1.5 cursor-pointer select-none" style={{fontSize:11}}>
+              <input type="checkbox" checked={skipBlank} onChange={e=>{setSkipBlank(e.target.checked);api?.setConfig('scanSkipBlank',e.target.checked)}}/>
+              <span className="sans" style={{color:C.inkMuted}}>Skip blank pages</span>
+            </label>
           </div>
           <div className="flex items-center justify-between">
             {/* UI toggle */}
@@ -1239,7 +1325,9 @@ export default function App(){
   const [pageCount,setPageCount]           = useState(1)
   const [currentPage,setCurrentPage]       = useState(1)
   const [zoom,setZoom]                     = useState(100)
-  const [activeMark,setActiveMark]         = useState('check')
+  const [pageSize,setPageSize]             = useState({w:612,h:792})
+  const [activeMark,setActiveMark]         = useState('')
+  const [refreshing,setRefreshing]         = useState(false)
   const [leftOpen,setLeftOpen]             = useState(true)
   const [rightOpen,setRightOpen]           = useState(true)
   const [rightTab,setRightTab]             = useState<'notes'|'xref'|'signoff'>('notes')
@@ -1266,10 +1354,18 @@ export default function App(){
   const [scanPage,setScanPage]             = useState(0)
   const pendingPageRef = useRef<number|null>(null)
   const pdfScrollRef = useRef<HTMLDivElement|null>(null)
+  const wheelLockRef = useRef(false)
   const refreshDocsRef = useRef<(delay?:number)=>void>(()=>{})
   const [tapeEntries,setTapeEntries] = useState<{id:string;value:number}[]>([])
   const [tapeInput,setTapeInput]     = useState('')
+  const tapeInputRef = useRef<HTMLInputElement|null>(null)
   const author='BC'
+
+  // Refs to avoid stale closures inside refreshDocs
+  const expandedFoldersRef = useRef<Set<string>>(new Set())
+  useEffect(()=>{expandedFoldersRef.current=expandedFolders},[expandedFolders])
+  const loadedFolderPathsRef = useRef<Set<string>>(new Set())
+  useEffect(()=>{loadedFolderPathsRef.current=loadedFolderPaths},[loadedFolderPaths])
 
   // Load clients
   useEffect(()=>{
@@ -1288,33 +1384,83 @@ export default function App(){
     })
   }
 
-  // Load doc tree — shallow top level, then eagerly load each top-level folder in parallel
+  // Load doc tree — shallow top level, then re-load every folder that's expanded or
+  // was previously loaded (recursively, any depth) in parallel. This is a "hard"
+  // refresh: it picks up new/changed/removed files anywhere in the already-opened tree.
   const refreshDocs=useCallback((delayMs=0)=>{
     if(!api||!selectedClient) return
     const cp=rootPath.replace(/\\$/,'')+`\\${selectedClient}`
+    setRefreshing(true)
     setTimeout(async ()=>{
-      const topLevel=await api!.listDocs(cp)
-      // Expand top-level folders that were previously expanded (or all on first load)
-      setExpandedFolders(prev=>{
-        if(prev.size===0) return new Set(topLevel.filter(n=>n.type==='folder').map(n=>n.path))
-        return prev
-      })
-      setDocTree(topLevel)
-      // Eagerly load all top-level folder contents in parallel
-      const topFolders=topLevel.filter((n):n is DocFolder=>n.type==='folder')
-      if(topFolders.length>0){
-        const loaded=await Promise.all(topFolders.map(f=>api!.listFolder(f.path).then(ch=>({path:f.path,ch}))))
-        setDocTree(prev=>{
-          let t=[...prev]
-          for(const {path:p,ch} of loaded) t=injectChildren(t,p,ch)
-          return t
-        })
-        setLoadedFolderPaths(prev=>{const n=new Set(prev);for(const f of topFolders)n.add(f.path);return n})
+      try{
+        const topLevel=await api!.listDocs(cp)
+        // Expand top-level folders that were previously expanded (or all on first load)
+        let expanded=expandedFoldersRef.current
+        if(expanded.size===0){
+          expanded=new Set(topLevel.filter(n=>n.type==='folder').map(n=>n.path))
+          setExpandedFolders(expanded)
+        }
+        setDocTree(topLevel)
+
+        // Re-fetch top-level folders + every folder that was expanded/loaded before (any depth)
+        const foldersToLoad=new Set<string>(topLevel.filter(n=>n.type==='folder').map(n=>n.path))
+        for(const p of expanded) foldersToLoad.add(p)
+        for(const p of loadedFolderPathsRef.current) foldersToLoad.add(p)
+
+        const paths=[...foldersToLoad]
+        if(paths.length>0){
+          const loaded=await Promise.all(paths.map(p=>api!.listFolder(p).then(ch=>({path:p,ch})).catch(()=>({path:p,ch:[] as (DocFile|DocFolder)[]}))))
+          setDocTree(prev=>{
+            let t=[...prev]
+            for(const {path:p,ch} of loaded) t=injectChildren(t,p,ch)
+            return t
+          })
+          setLoadedFolderPaths(new Set(paths))
+        }
+      } finally {
+        setRefreshing(false)
       }
     },delayMs)
   },[selectedClient,rootPath])
 
   useEffect(()=>{refreshDocs()},[refreshDocs])
+
+  // Fit-to-page: compute zoom % so the page exactly fills the scroll viewport
+  const fitToPage=useCallback(()=>{
+    const el=pdfScrollRef.current
+    if(!el||!pageSize.w||!pageSize.h) return
+    const padding=48 // p-6 on each side (24px*2)
+    const availW=el.clientWidth-padding
+    const availH=el.clientHeight-padding
+    const scaleW=(availW/pageSize.w)*100
+    const scaleH=(availH/pageSize.h)*100
+    const newZoom=Math.floor(Math.min(scaleW,scaleH))
+    setZoom(Math.max(25,Math.min(400,newZoom)))
+  },[pageSize])
+
+  // Mouse wheel: when scrolled to the bottom/top of the page, advance/retreat pages
+  const handlePdfWheel=useCallback((e:React.WheelEvent<HTMLDivElement>)=>{
+    const el=pdfScrollRef.current
+    if(!el) return
+    const atBottom = el.scrollTop+el.clientHeight >= el.scrollHeight-2
+    const atTop = el.scrollTop<=2
+    if(e.deltaY>0 && atBottom && currentPage<pageCount){
+      if(wheelLockRef.current) return
+      wheelLockRef.current=true
+      setCurrentPage(p=>Math.min(pageCount,p+1))
+      el.scrollTo({top:0})
+      setTimeout(()=>{wheelLockRef.current=false},400)
+    } else if(e.deltaY<0 && atTop && currentPage>1){
+      if(wheelLockRef.current) return
+      wheelLockRef.current=true
+      setCurrentPage(p=>Math.max(1,p-1))
+      setTimeout(()=>{
+        const el2=pdfScrollRef.current
+        if(el2) el2.scrollTo({top:el2.scrollHeight})
+        wheelLockRef.current=false
+      },50)
+    }
+  },[currentPage,pageCount])
 
   // Load PDF + annotations when file selected
   useEffect(()=>{
@@ -1369,6 +1515,14 @@ export default function App(){
   const deleteTapeStamp=useCallback((id:string)=>{
     setAnnotations(prev=>{
       const next={...prev,tapeStamps:(prev.tapeStamps??[]).filter(s=>s.id!==id)}
+      if(api&&selectedFile) api.saveAnnotations(selectedFile.path,next)
+      return next
+    })
+  },[selectedFile])
+
+  const moveTapeStamp=useCallback((id:string,x:number,y:number)=>{
+    setAnnotations(prev=>{
+      const next={...prev,tapeStamps:(prev.tapeStamps??[]).map(s=>s.id===id?{...s,x,y}:s)}
       if(api&&selectedFile) api.saveAnnotations(selectedFile.path,next)
       return next
     })
@@ -1712,6 +1866,8 @@ export default function App(){
         .row-hover:hover{background-color:rgba(168,119,31,0.07)!important}
         @keyframes shimmer{0%,100%{opacity:1}50%{opacity:0.5}}
         .pulse{animation:shimmer 2s ease-in-out infinite}
+        @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+        .spin{animation:spin 0.7s linear infinite}
         .doc-shadow{box-shadow:0 1px 2px rgba(26,22,18,0.04),0 4px 12px rgba(26,22,18,0.06),0 16px 40px rgba(26,22,18,0.08)}
         .tool-btn{display:flex;align-items:center;gap:6px;padding:5px 10px;border-radius:4px;font-size:12px;font-weight:500;cursor:pointer;border:1px solid transparent;transition:all 0.12s}
         .tool-btn:hover{background:rgba(168,119,31,0.08);border-color:${C.ruleSoft}}
@@ -1816,8 +1972,8 @@ export default function App(){
                         </span>
                       )}
                       <span className="mono" style={{fontSize:9,color:C.inkFaint}}>{flatFiles(docTree).length}</span>
-                      <button onClick={()=>refreshDocs()} title="Refresh folder" className="p-1 rounded row-hover" style={{color:C.inkFaint,display:'flex',alignItems:'center'}}>
-                        <RefreshCw size={20}/>
+                      <button onClick={()=>refreshDocs()} disabled={refreshing} title="Refresh folder" className="p-1 rounded row-hover" style={{color:C.inkFaint,display:'flex',alignItems:'center'}}>
+                        <RefreshCw size={20} className={refreshing?'spin':''}/>
                       </button>
                     </div>
                   </div>
@@ -1916,6 +2072,7 @@ export default function App(){
             <button onClick={()=>setZoom(z=>Math.max(50,z-25))} className="tool-btn" style={{color:C.inkSoft,padding:'5px 6px'}}><ZoomOut size={13}/></button>
             <span className="mono" style={{fontSize:11,color:C.ink,fontWeight:600,minWidth:36,textAlign:'center'}}>{zoom}%</span>
             <button onClick={()=>setZoom(z=>Math.min(200,z+25))} className="tool-btn" style={{color:C.inkSoft,padding:'5px 6px'}}><ZoomIn size={13}/></button>
+            <button onClick={fitToPage} title="Fit to page" className="tool-btn" style={{color:C.inkSoft,padding:'5px 6px'}}><Maximize2 size={13}/></button>
 
             <div style={{width:1,height:18,backgroundColor:C.rule,margin:'0 4px'}}/>
 
@@ -1927,9 +2084,9 @@ export default function App(){
 
           <div className="flex-1 flex overflow-hidden">
             {/* PDF area */}
-            <div ref={pdfScrollRef} className="flex-1 overflow-auto p-6 scrollbar-thin" style={{backgroundColor:C.paperDeep}}>
+            <div ref={pdfScrollRef} onWheel={handlePdfWheel} className="flex-1 overflow-auto p-6 scrollbar-thin" style={{backgroundColor:C.paperDeep}}>
               <div className="mx-auto doc-shadow" style={{width:'fit-content'}}>
-                <PdfViewer pdfBytes={pdfBytes} zoom={zoom} page={currentPage} onPageCount={setPageCount} annotations={annotations} activeMark={activeMark} onAddTickmark={addTickmark} onAddTapeStamp={addTapeStamp} onDeleteTapeStamp={deleteTapeStamp} author={author}/>
+                <PdfViewer pdfBytes={pdfBytes} zoom={zoom} page={currentPage} onPageCount={setPageCount} onPageSize={(w,h)=>setPageSize({w,h})} annotations={annotations} activeMark={activeMark} onAddTickmark={addTickmark} onAddTapeStamp={addTapeStamp} onDeleteTapeStamp={deleteTapeStamp} onMoveTapeStamp={moveTapeStamp} author={author}/>
               </div>
             </div>
 
@@ -1942,7 +2099,7 @@ export default function App(){
                   {CHECKS.map(c=>(
                     <button
                       key={c.id}
-                      onClick={()=>setActiveMark(c.id)}
+                      onClick={()=>setActiveMark(am=>am===c.id?'':c.id)}
                       title={c.label}
                       style={{
                         width:36, height:36, borderRadius:4,
@@ -2022,9 +2179,15 @@ export default function App(){
                       {/* Input */}
                       <div className="flex gap-1 px-2 py-1.5 flex-shrink-0" style={{borderTop:`1px solid ${C.ruleSoft}`,backgroundColor:C.paper}}>
                         <input
+                          ref={tapeInputRef}
                           type="text" placeholder="0.00" value={tapeInput}
                           onChange={e=>setTapeInput(e.target.value)}
-                          onKeyDown={e=>{ if(e.key==='Enter') addEntry(); if(e.key==='Escape') setTapeInput('') }}
+                          onKeyDown={e=>{
+                            if(e.key==='Enter') addEntry()
+                            else if(e.key==='Escape') setTapeInput('')
+                            else if(e.key==='PageDown'){ e.preventDefault(); setCurrentPage(p=>Math.min(pageCount,p+1)); tapeInputRef.current?.focus() }
+                            else if(e.key==='PageUp'){ e.preventDefault(); setCurrentPage(p=>Math.max(1,p-1)); tapeInputRef.current?.focus() }
+                          }}
                           className="flex-1 outline-none mono px-1.5 py-1 rounded"
                           style={{fontSize:12,backgroundColor:C.paperDeep,border:`1px solid ${C.rule}`,color:C.ink,textAlign:'right'}}
                           autoFocus

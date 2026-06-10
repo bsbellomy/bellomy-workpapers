@@ -56,6 +56,7 @@ class Program
         var deviceId    = GetFlag(args, "--device");
         var useNativeUI = args.Contains("--ui");
         var driver      = ParseDriver(args);
+        var scanName    = GetFlag(args, "--name");
 
         // Resolution — default 200 dpi (good quality, much smaller than 300)
         var dpiStr = GetFlag(args, "--dpi");
@@ -69,6 +70,8 @@ class Program
             bitDepth = BitDepth.BlackAndWhite;
         else
             bitDepth = BitDepth.Grayscale; // default
+
+        var skipBlankPages = args.Contains("--skip-blank");
 
         Directory.CreateDirectory(destFolder);
 
@@ -102,6 +105,9 @@ class Program
             UseNativeUI = useNativeUI,
             Dpi         = useNativeUI ? 0   : dpi,      // 0 = use driver default
             BitDepth    = useNativeUI ? BitDepth.Color : bitDepth,  // Color = driver default
+            ExcludeBlankPages          = skipBlankPages,
+            BlankPageWhiteThreshold    = 70,
+            BlankPageCoverageThreshold = 25,
         };
 
         var images = new List<ProcessedImage>();
@@ -115,12 +121,16 @@ class Program
             return Error("No pages were scanned.");
 
         // ── save PDF ──────────────────────────────────────────────────────────
-        var ts   = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-        var dest = Path.Combine(destFolder, $"Scan_{ts}.pdf");
+        var ts       = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+        var baseName = !string.IsNullOrWhiteSpace(scanName)
+            ? scanName.Trim()
+            : $"Scan_{ts}";
+        foreach (var c in Path.GetInvalidFileNameChars()) baseName = baseName.Replace(c, '_');
+        var dest = Path.Combine(destFolder, $"{baseName}.pdf");
         var n    = 2;
         while (File.Exists(dest))
         {
-            dest = Path.Combine(destFolder, $"Scan_{ts}_{n}.pdf");
+            dest = Path.Combine(destFolder, $"{baseName}_{n}.pdf");
             n++;
         }
 

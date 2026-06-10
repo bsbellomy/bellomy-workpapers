@@ -12,7 +12,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   combineFiles:    (topPath: string, bottomPath: string) => ipcRenderer.invoke('fs:combineFiles', topPath, bottomPath),
   pickScanner:     () => ipcRenderer.invoke('fs:pickScanner'),
   getScanInbox:    () => ipcRenderer.invoke('fs:getScanInbox'),
-  startScan:        (destFolder: string, useNativeUI: boolean, dpi?: number, colorMode?: string, scanName?: string) => ipcRenderer.invoke('fs:startScan', destFolder, useNativeUI, dpi, colorMode, scanName),
+  startScan:        (destFolder: string, useNativeUI: boolean, dpi?: number, colorMode?: string, scanName?: string, skipBlank?: boolean) => ipcRenderer.invoke('fs:startScan', destFolder, useNativeUI, dpi, colorMode, scanName, skipBlank),
   listScanDevices:  () => ipcRenderer.invoke('fs:listScanDevices'),
   stopScanWatcher:  () => ipcRenderer.invoke('fs:stopScanWatcher'),
   onScanFile:       (cb: (data: {name:string}) => void) => ipcRenderer.on('scan:fileArrived', (_e, data) => cb(data)),
