@@ -23,6 +23,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   copyFile:        (p:string) => ipcRenderer.invoke('fs:copyFile', p),
   savePdf:         (p:string, b:ArrayBuffer) => ipcRenderer.invoke('fs:savePdf', p, b),
   renameFolder:    (p:string, n:string) => ipcRenderer.invoke('fs:renameFolder', p, n),
+  hoistFolder:     (p:string) => ipcRenderer.invoke('fs:hoistFolder', p),
+  unhoistFolder:   (p:string) => ipcRenderer.invoke('fs:unhoistFolder', p),
   getConfig:       (k:string) => ipcRenderer.invoke('fs:getConfig', k),
   setConfig:       (k:string, v:unknown) => ipcRenderer.invoke('fs:setConfig', k, v),
   printFile:       (p:string) => ipcRenderer.invoke('fs:printFile', p),

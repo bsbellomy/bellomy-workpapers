@@ -40,6 +40,8 @@ const api = (window as unknown as { electronAPI?: {
   copyFile:       (p:string)=>Promise<{ok:boolean;error?:string;destPath?:string}>
   savePdf:        (p:string,b:ArrayBuffer)=>Promise<{ok:boolean;error?:string}>
   renameFolder:   (p:string,n:string)=>Promise<{ok:boolean;error?:string;newPath?:string}>
+  hoistFolder:    (p:string)=>Promise<{ok:boolean;error?:string;path?:string}>
+  unhoistFolder:  (p:string)=>Promise<{ok:boolean;error?:string}>
   getConfig:      (k:string)=>Promise<unknown>
   setConfig:      (k:string,v:unknown)=>Promise<boolean>
   printFile:      (p:string)=>Promise<{ok:boolean;error?:string}>
@@ -1337,8 +1339,33 @@ export default function App(){
   const [dragSrc,setDragSrc]               = useState<string|null>(null)
   const [dragOver,setDragOver]             = useState<string|null>(null)
   const [ctxMenu,setCtxMenu]               = useState<{x:number;y:number;file:DocFile}|null>(null)
-  const [ctxFolder,setCtxFolder]           = useState<{x:number;y:number;folder:DocFolder}|null>(null)
+  const [ctxFolder,setCtxFolder]           = useState<{x:number;y:number;folder:DocFolder;hoistOnly?:boolean}|null>(null)
   const [renaming,setRenaming]             = useState<{file:DocFile;value:string}|null>(null)
+  const [hoisted,setHoisted]               = useState<{folder:string;path:string}|null>(null)
+  const [hoisting,setHoisting]             = useState(false)
+  const [leftWidth,setLeftWidth]           = useState(240)
+  const [resizingLeft,setResizingLeft]     = useState(false)
+
+  // Load/save left-panel width
+  useEffect(()=>{
+    api?.getConfig('leftPanelWidth').then(v=>{ if(typeof v==='number'&&v>0) setLeftWidth(v) })
+  },[])
+
+  function startResizeLeft(e:React.MouseEvent){
+    e.preventDefault()
+    setResizingLeft(true)
+    function onMove(ev:MouseEvent){
+      setLeftWidth(Math.max(160,Math.min(560,ev.clientX)))
+    }
+    function onUp(){
+      window.removeEventListener('mousemove',onMove)
+      window.removeEventListener('mouseup',onUp)
+      setResizingLeft(false)
+      setLeftWidth(w=>{ api?.setConfig('leftPanelWidth',w); return w })
+    }
+    window.addEventListener('mousemove',onMove)
+    window.addEventListener('mouseup',onUp)
+  }
   const [moveDrawer,setMoveDrawer]         = useState<DocFile[]|null>(null)
   const [editFileModal,setEditFileModal]   = useState<DocFile|null>(null)
   const [editFolderModal,setEditFolderModal] = useState<DocFolder|null>(null)
@@ -1775,7 +1802,7 @@ export default function App(){
             >
               <span style={{fontSize:15,fontWeight:700,color:C.inkMuted,width:14,display:'inline-block',textAlign:'center',lineHeight:1,flexShrink:0}}>{open?'−':'+'}</span>
               {open?<FolderOpen size={14} style={{color:isDrop?C.ochreDeep:C.ochre,flexShrink:0}}/>:<FolderClosed size={14} style={{color:isDrop?C.ochreDeep:C.ochre,flexShrink:0}}/>}
-              <span className="serif" style={{fontSize:14,fontWeight:600,flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{node.name}</span>
+              <span className="serif" title={node.name} style={{fontSize:14,fontWeight:600,flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{node.name}</span>
             </div>
             {open&&renderTree(node.children,depth+1)}
           </div>
@@ -1835,7 +1862,7 @@ export default function App(){
               <span style={{width:16,flexShrink:0}}/>
             )}
             <FileText size={13} style={{color:isActive?C.ochre:C.inkFaint,flexShrink:0}}/>
-            <span className="flex-1 truncate sans" style={{fontSize:14,color:isActive?C.ink:C.inkSoft,fontWeight:isActive?600:400,marginLeft:3}}>{node.name}</span>
+            <span className="flex-1 truncate sans" title={node.name} style={{fontSize:14,color:isActive?C.ink:C.inkSoft,fontWeight:isActive?600:400,marginLeft:3}}>{node.name}</span>
             {node.annotations.tickmarks.length>0&&(
               <span className="mono px-1 rounded flex-shrink-0" style={{backgroundColor:isActive?C.ochre:C.paperDeep,color:isActive?C.paperLight:C.inkSoft,fontSize:10,fontWeight:600}}>
                 {node.annotations.tickmarks.length}
@@ -1916,7 +1943,7 @@ export default function App(){
 
         {/* ── Left rail ── */}
         {leftOpen?(
-          <div className="flex flex-col flex-shrink-0" style={{width:240,backgroundColor:C.paperLight,borderRight:`1px solid ${C.rule}`}}>
+          <div className="flex flex-col flex-shrink-0" style={{width:leftWidth,backgroundColor:C.paperLight,borderRight:`1px solid ${C.rule}`}}>
             <div className="px-3 py-2 flex items-center gap-1.5" style={{borderBottom:`1px solid ${C.ruleSoft}`}}>
               <div className="flex-1 flex items-center gap-1.5 px-2 py-1 rounded" style={{backgroundColor:C.paper,border:`1px solid ${C.rule}`}}>
                 <Search size={11} style={{color:C.inkMuted,flexShrink:0}}/>
@@ -1942,7 +1969,12 @@ export default function App(){
             <div className="flex-1 overflow-y-auto scrollbar-thin">
               {!selectedClient?(
                 <>
-                  <div className="px-3 py-2 flex items-center justify-between" style={{borderBottom:`1px solid ${C.ruleSoft}`}}>
+                  <div className="px-3 py-2 flex items-center justify-between" style={{borderBottom:`1px solid ${C.ruleSoft}`}}
+                    onContextMenu={e=>{
+                      e.preventDefault();e.stopPropagation()
+                      setCtxFolder({x:e.clientX,y:e.clientY,folder:{name:'Cabinet (entire client list)',type:'folder',path:rootPath.replace(/\\$/,''),children:[]},hoistOnly:true})
+                    }}
+                  >
                     <div className="serif" style={{fontSize:10,letterSpacing:1.2,textTransform:'uppercase',color:C.inkMuted,fontWeight:600}}>Clients</div>
                     <div className="mono" style={{fontSize:9,color:C.inkFaint}}>{clients.length}</div>
                   </div>
@@ -1950,13 +1982,17 @@ export default function App(){
                   {filteredClients.map(name=>{
                     const isSel=selectedClient===name
                     return(
-                      <div key={name} className="flex items-center gap-2 px-3 py-2 cursor-pointer relative row-hover" style={{backgroundColor:isSel?C.ochreSoft:'transparent'}} onClick={()=>{setSelectedClient(name);setSearch('')}}>
-
+                      <div key={name} className="flex items-center gap-2 px-3 py-2 cursor-pointer relative row-hover" style={{backgroundColor:isSel?C.ochreSoft:'transparent'}} onClick={()=>{setSelectedClient(name);setSearch('')}}
+                        onContextMenu={e=>{
+                          e.preventDefault();e.stopPropagation()
+                          setCtxFolder({x:e.clientX,y:e.clientY,folder:{name,type:'folder',path:rootPath.replace(/\\$/,'')+`\\${name}`,children:[]},hoistOnly:true})
+                        }}
+                      >
                         {isSel&&<div className="absolute left-0 top-0 bottom-0" style={{width:2,backgroundColor:C.ochre}}/>}
                         <div style={{width:22,height:22,backgroundColor:isSel?C.ochre:C.paper,border:`1px solid ${isSel?C.ochre:C.rule}`,borderRadius:2,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
                           <span className="serif" style={{fontSize:11,fontWeight:600,color:isSel?C.ink:C.inkSoft}}>{name[0].toUpperCase()}</span>
                         </div>
-                        <span className="flex-1 truncate sans" style={{fontSize:14,fontWeight:isSel?600:500,color:C.ink}}>{name}</span>
+                        <span className="flex-1 truncate sans" title={name} style={{fontSize:14,fontWeight:isSel?600:500,color:C.ink}}>{name}</span>
                       </div>
                     )
                   })}
@@ -1992,6 +2028,15 @@ export default function App(){
           </div>
         ):(
           <button onClick={()=>setLeftOpen(true)} className="px-2 flex items-center row-hover" style={{backgroundColor:C.paperLight,borderRight:`1px solid ${C.rule}`,color:C.inkMuted}}><PanelLeftOpen size={14}/></button>
+        )}
+
+        {/* ── Left panel resize divider ── */}
+        {leftOpen&&(
+          <div
+            onMouseDown={startResizeLeft}
+            title="Drag to resize"
+            style={{width:5,marginLeft:-2.5,marginRight:-2.5,zIndex:10,cursor:'col-resize',backgroundColor:resizingLeft?C.ochre:'transparent',flexShrink:0}}
+          />
         )}
 
         {/* ── Main viewer ── */}
@@ -2084,10 +2129,29 @@ export default function App(){
 
           <div className="flex-1 flex overflow-hidden">
             {/* PDF area */}
-            <div ref={pdfScrollRef} onWheel={handlePdfWheel} className="flex-1 overflow-auto p-6 scrollbar-thin" style={{backgroundColor:C.paperDeep}}>
-              <div className="mx-auto doc-shadow" style={{width:'fit-content'}}>
-                <PdfViewer pdfBytes={pdfBytes} zoom={zoom} page={currentPage} onPageCount={setPageCount} onPageSize={(w,h)=>setPageSize({w,h})} annotations={annotations} activeMark={activeMark} onAddTickmark={addTickmark} onAddTapeStamp={addTapeStamp} onDeleteTapeStamp={deleteTapeStamp} onMoveTapeStamp={moveTapeStamp} author={author}/>
+            <div className="relative flex-1 overflow-hidden">
+              <div ref={pdfScrollRef} onWheel={handlePdfWheel} className="h-full overflow-auto p-6 scrollbar-thin" style={{backgroundColor:C.paperDeep}}>
+                <div className="mx-auto doc-shadow" style={{width:'fit-content'}}>
+                  <PdfViewer pdfBytes={pdfBytes} zoom={zoom} page={currentPage} onPageCount={setPageCount} onPageSize={(w,h)=>setPageSize({w,h})} annotations={annotations} activeMark={activeMark} onAddTickmark={addTickmark} onAddTapeStamp={addTapeStamp} onDeleteTapeStamp={deleteTapeStamp} onMoveTapeStamp={moveTapeStamp} author={author}/>
+                </div>
               </div>
+              {/* Big page-turn arrows */}
+              {currentPage>1&&(
+                <button onClick={()=>setCurrentPage(p=>Math.max(1,p-1))} title="Previous page"
+                  className="absolute flex items-center justify-center"
+                  style={{left:8,top:'50%',transform:'translateY(-50%)',width:44,height:64,borderRadius:8,backgroundColor:'rgba(26,22,18,0.18)',color:'#FEFCF7',fontSize:28,fontWeight:700,border:'none',cursor:'pointer',transition:'background-color 0.15s',zIndex:5}}
+                  onMouseEnter={e=>e.currentTarget.style.backgroundColor='rgba(26,22,18,0.38)'}
+                  onMouseLeave={e=>e.currentTarget.style.backgroundColor='rgba(26,22,18,0.18)'}
+                >‹</button>
+              )}
+              {currentPage<pageCount&&(
+                <button onClick={()=>setCurrentPage(p=>Math.min(pageCount,p+1))} title="Next page"
+                  className="absolute flex items-center justify-center"
+                  style={{right:8,top:'50%',transform:'translateY(-50%)',width:44,height:64,borderRadius:8,backgroundColor:'rgba(26,22,18,0.18)',color:'#FEFCF7',fontSize:28,fontWeight:700,border:'none',cursor:'pointer',transition:'background-color 0.15s',zIndex:5}}
+                  onMouseEnter={e=>e.currentTarget.style.backgroundColor='rgba(26,22,18,0.38)'}
+                  onMouseLeave={e=>e.currentTarget.style.backgroundColor='rgba(26,22,18,0.18)'}
+                >›</button>
+              )}
             </div>
 
             {/* ── Right rail ── */}
@@ -2378,9 +2442,24 @@ export default function App(){
           <div className="px-3 py-1.5" style={{borderBottom:`1px solid ${C.ruleSoft}`,backgroundColor:C.paperDeep}}>
             <div className="truncate sans" style={{fontSize:11,color:C.inkMuted}}>{ctxFolder.folder.name}</div>
           </div>
-          <button className="w-full text-left px-4 py-2.5 sans row-hover flex items-center gap-2" style={{fontSize:13,color:C.ink}}
-            onClick={()=>{setEditFolderModal(ctxFolder.folder);setCtxFolder(null)}}>
-            🗂️ <span>Edit Folder…</span>
+          {!ctxFolder.hoistOnly&&(
+            <button className="w-full text-left px-4 py-2.5 sans row-hover flex items-center gap-2" style={{fontSize:13,color:C.ink}}
+              onClick={()=>{setEditFolderModal(ctxFolder.folder);setCtxFolder(null)}}>
+              🗂️ <span>Edit Folder…</span>
+            </button>
+          )}
+          <button className="w-full text-left px-4 py-2.5 sans row-hover flex items-center gap-2" style={{fontSize:13,color:C.ink,borderTop:ctxFolder.hoistOnly?'none':`1px solid ${C.ruleSoft}`}}
+            disabled={hoisting}
+            onClick={async()=>{
+              const folder=ctxFolder.folder
+              setCtxFolder(null)
+              setHoisting(true)
+              const r=await api?.hoistFolder(folder.path)
+              setHoisting(false)
+              if(r?.ok&&r.path) setHoisted({folder:folder.path,path:r.path})
+              else alert('Could not hoist folder: '+(r?.error??'Unknown error'))
+            }}>
+            📦 <span>Hoist…</span>
           </button>
         </div>
       )}
@@ -2432,6 +2511,48 @@ export default function App(){
       {/* ── Scan settings modal ── */}
       {showScanSettings&&(
         <ScanSettingsModal onClose={()=>setShowScanSettings(false)}/>
+      )}
+
+      {/* ── Hoist freeze overlay ── */}
+      {(hoisting||hoisted)&&(
+        <div className="fixed inset-0 z-[100] flex items-center justify-center" style={{backgroundColor:'rgba(26,22,18,0.65)'}}>
+          <div className="rounded-lg" style={{backgroundColor:'#FEFCF7',border:`1px solid ${C.rule}`,boxShadow:'0 8px 32px rgba(26,22,18,0.35)',minWidth:420,maxWidth:560,padding:'24px 28px'}}>
+            {hoisting?(
+              <>
+                <div className="serif" style={{fontSize:16,fontWeight:600,color:C.ink,marginBottom:8}}>📦 Hoisting folder…</div>
+                <div className="sans" style={{fontSize:12,color:C.inkMuted}}>Copying contents to a temporary cabinet. Please wait.</div>
+              </>
+            ):hoisted&&(
+              <>
+                <div className="serif" style={{fontSize:16,fontWeight:600,color:C.ink,marginBottom:8}}>📦 Folder Hoisted</div>
+                <div className="sans" style={{fontSize:12,color:C.inkMuted,marginBottom:6}}>
+                  All contents of <strong>{hoisted.folder.split('\\').pop()}</strong> have been copied to a temporary cabinet:
+                </div>
+                <div className="mono" style={{fontSize:11,color:C.ink,backgroundColor:C.paperDeep,border:`1px solid ${C.ruleSoft}`,borderRadius:4,padding:'8px 10px',wordBreak:'break-all',marginBottom:14}}>
+                  {hoisted.path}
+                </div>
+                <div className="sans" style={{fontSize:12,color:C.inkMuted,marginBottom:16}}>
+                  The app is paused while the folder is hoisted. When you're done, click <strong>Unhoist</strong> to permanently delete the temporary copy (the original folder is untouched).
+                </div>
+                <div className="flex justify-end gap-2">
+                  <button
+                    className="px-4 py-1.5 rounded sans"
+                    style={{fontSize:12,fontWeight:600,backgroundColor:C.ink,color:C.paperLight}}
+                    onClick={async()=>{
+                      setHoisting(true)
+                      const r=await api?.unhoistFolder(hoisted.path)
+                      setHoisting(false)
+                      if(!r?.ok) alert('Could not unhoist: '+(r?.error??'Unknown error'))
+                      setHoisted(null)
+                    }}
+                  >
+                    Unhoist
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
       )}
 
       {/* ── Scan toasts ── */}

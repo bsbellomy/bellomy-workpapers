@@ -3,6 +3,7 @@ import { autoUpdater } from 'electron-updater'
 import { spawn } from 'child_process'
 import path from 'path'
 import fs from 'fs'
+import crypto from 'crypto'
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
@@ -438,4 +439,35 @@ ipcMain.handle('fs:renameFolder', async (_e, folderPath: string, newName: string
       }
     )
   })
+})
+
+// ── Hoist folder: copy a folder's full contents to a temp "cabinet" ──────────
+ipcMain.handle('fs:hoistFolder', async (_e, folderPath: string) => {
+  try {
+    const id = crypto.randomUUID()
+    const dest = path.join(app.getPath('temp'), 'bellomy-hoist', id, path.basename(folderPath))
+    fs.mkdirSync(path.dirname(dest), { recursive: true })
+    fs.cpSync(folderPath, dest, { recursive: true })
+    return { ok: true, path: dest }
+  } catch (e: unknown) {
+    return { ok: false, error: String(e) }
+  }
+})
+
+// ── Unhoist: permanently delete the contents of a hoisted temp cabinet ───────
+ipcMain.handle('fs:unhoistFolder', async (_e, hoistPath: string) => {
+  try {
+    // Only ever delete inside our own temp hoist directory
+    const hoistRoot = path.join(app.getPath('temp'), 'bellomy-hoist')
+    const resolved = path.resolve(hoistPath)
+    if (!resolved.startsWith(path.resolve(hoistRoot) + path.sep)) {
+      return { ok: false, error: 'Refusing to delete outside the hoist temp directory.' }
+    }
+    // Remove the per-hoist parent directory (one level up from the copied folder)
+    const hoistDir = path.dirname(resolved)
+    fs.rmSync(hoistDir, { recursive: true, force: true })
+    return { ok: true }
+  } catch (e: unknown) {
+    return { ok: false, error: String(e) }
+  }
 })
