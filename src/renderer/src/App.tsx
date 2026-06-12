@@ -4,7 +4,7 @@ import {
   ChevronRight, ChevronDown, FileSignature, ZoomIn, ZoomOut, Maximize2,
   MessageSquare, PanelRightClose, PanelRightOpen, PanelLeftClose, PanelLeftOpen,
   Clock, Layers, Settings, ScanLine, ArrowLeft, Merge, Printer,
-  RefreshCw, Trash2, Calculator,
+  RefreshCw, Trash2, Calculator, FileSpreadsheet, StickyNote, Copy, CreditCard,
 } from 'lucide-react'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -16,6 +16,11 @@ interface Annotations { tickmarks:Tickmark[]; signoffs:Signoff[]; tapeStamps?:Ta
 interface DocFile  { name:string; type:'file';   path:string; annotations:Annotations }
 interface DocFolder{ name:string; type:'folder'; path:string; children:(DocFile|DocFolder)[] }
 interface Bookmark { title:string; page:number|null; items:Bookmark[] }
+
+function fileExt(name:string):string { return (name.match(/\.([^.]+)$/)?.[1]??'').toLowerCase() }
+function isPdfFile(name:string):boolean { return fileExt(name)==='pdf' }
+function isWordFile(name:string):boolean { return fileExt(name)==='doc'||fileExt(name)==='docx' }
+function isExcelFile(name:string):boolean { return fileExt(name)==='xls'||fileExt(name)==='xlsx' }
 
 const api = (window as unknown as { electronAPI?: {
   listClients:    (p:string)=>Promise<string[]>
@@ -42,6 +47,12 @@ const api = (window as unknown as { electronAPI?: {
   renameFolder:   (p:string,n:string)=>Promise<{ok:boolean;error?:string;newPath?:string}>
   hoistFolder:    (p:string)=>Promise<{ok:boolean;error?:string;path?:string}>
   unhoistFolder:  (p:string)=>Promise<{ok:boolean;error?:string}>
+  openFile:       (p:string)=>Promise<{ok:boolean;error?:string}>
+  createNotesFile:(p:string)=>Promise<{ok:boolean;error?:string;path?:string;openError?:string}>
+  readTextFile:   (p:string)=>Promise<{ok:boolean;error?:string;content?:string}>
+  writeTextFile:  (p:string,content:string)=>Promise<{ok:boolean;error?:string}>
+  findTaxForm:    (clientPath:string)=>Promise<{ok:boolean;error?:string;result?:{path:string;name:string;year:string|null}|null}>
+  findTaxForms:   (clientPath:string)=>Promise<{ok:boolean;error?:string;results?:{path:string;name:string;year:string|null}[]}>
   getConfig:      (k:string)=>Promise<unknown>
   setConfig:      (k:string,v:unknown)=>Promise<boolean>
   printFile:      (p:string)=>Promise<{ok:boolean;error?:string}>
@@ -1319,6 +1330,7 @@ export default function App(){
   const [clients,setClients]               = useState<string[]>([])
   const [selectedClient,setSelectedClient] = useState<string|null>(null)
   const [docTree,setDocTree]               = useState<(DocFile|DocFolder)[]>([])
+  const [activeFolder,setActiveFolder]     = useState<{name:string;path:string}|null>(null)
   const [expandedFolders,setExpandedFolders] = useState<Set<string>>(new Set())
   const [loadedFolderPaths,setLoadedFolderPaths] = useState<Set<string>>(new Set())
   const [selectedFile,setSelectedFile]     = useState<DocFile|null>(null)
@@ -1343,6 +1355,11 @@ export default function App(){
   const [renaming,setRenaming]             = useState<{file:DocFile;value:string}|null>(null)
   const [hoisted,setHoisted]               = useState<{folder:string;path:string}|null>(null)
   const [hoisting,setHoisting]             = useState(false)
+  const [noteText,setNoteText]             = useState<string|null>(null)
+  const [noteLoaded,setNoteLoaded]         = useState(false)
+  const [noteSaving,setNoteSaving]         = useState(false)
+  const noteSaveTimer                      = useRef<ReturnType<typeof setTimeout>|null>(null)
+  const [clientInfo,setClientInfo]         = useState<{loading:boolean;name?:string;idLabel?:string;idValue?:string;spouseSsn?:string;formName?:string;error?:string}|null>(null)
   const [leftWidth,setLeftWidth]           = useState(240)
   const [resizingLeft,setResizingLeft]     = useState(false)
 
@@ -1498,6 +1515,13 @@ export default function App(){
     setCurrentPage(startPage)
     pdfScrollRef.current?.scrollTo({top:0})
     setAnnotations({tickmarks:[],signoffs:[]})
+    if(fileExt(selectedFile.name)==='txt'){
+      setPdfBytes(null); setNoteText(null); setNoteLoaded(false)
+      api.readTextFile(selectedFile.path).then(r=>{ setNoteText(r.ok?(r.content??''):''); setNoteLoaded(true) })
+      return
+    }
+    setNoteText(null); setNoteLoaded(false)
+    if(!isPdfFile(selectedFile.name)){ setPdfBytes(null); return }
     api.readPdf(selectedFile.path).then(setPdfBytes)
     api.getAnnotations(selectedFile.path).then(setAnnotations)
   },[selectedFile])
@@ -1784,6 +1808,142 @@ export default function App(){
     }
   }
 
+  function handleNoteChange(value:string){
+    setNoteText(value)
+    if(!selectedFile||!api) return
+    const path=selectedFile.path
+    if(noteSaveTimer.current) clearTimeout(noteSaveTimer.current)
+    noteSaveTimer.current=setTimeout(()=>{
+      setNoteSaving(true)
+      api.writeTextFile(path,value).finally(()=>setNoteSaving(false))
+    },600)
+  }
+
+  async function extractClientInfo(bytes:ArrayBuffer):Promise<{idMatch?:string;idLabel:string;spouseSsn?:string;nameValue?:string}>{
+      const pdfjsLib=await import('pdfjs-dist')
+      pdfjsLib.GlobalWorkerOptions.workerSrc=new URL('pdfjs-dist/build/pdf.worker.min.mjs',import.meta.url).toString()
+      const pdf=await pdfjsLib.getDocument({data:new Uint8Array(bytes)}).promise
+
+      const ssnRe=/\b\d{3}-\d{2}-\d{4}\b|\*{3}-\*{2}-\d{4}/
+      const ssnReAll=/\b\d{3}-\d{2}-\d{4}\b|\*{3}-\*{2}-\d{4}/g
+      const einRe=/\b\d{2}-\d{7}\b|\*{2}-\*{3}\d{4}/
+      let idMatch:string|undefined
+      let idLabel='EIN'
+      let spouseSsn:string|undefined
+      let nameValue:string|undefined
+
+      const maxPages=Math.min(pdf.numPages,12)
+      for(let p=1;p<=maxPages;p++){
+        const page=await pdf.getPage(p)
+        const content=await page.getTextContent()
+        const items=content.items as {str:string;transform:number[]}[]
+
+        // group text items into lines by y-position
+        const lines:{y:number;items:{x:number;str:string}[]}[]=[]
+        for(const it of items){
+          const str=it.str
+          if(!str.trim()) continue
+          const y=Math.round(it.transform[5])
+          const x=it.transform[4]
+          let line=lines.find(l=>Math.abs(l.y-y)<3)
+          if(!line){ line={y,items:[]}; lines.push(line) }
+          line.items.push({x,str})
+        }
+        lines.forEach(l=>l.items.sort((a,b)=>a.x-b.x))
+        lines.sort((a,b)=>b.y-a.y) // top of page first
+
+        const fullText=lines.map(l=>l.items.map(i=>i.str).join(' ')).join('\n')
+        const ssnMatches=[...new Set([...fullText.matchAll(ssnReAll)].map(m=>m[0]))]
+        const einMatch=fullText.match(einRe)
+        if(ssnMatches.length===0&&!einMatch) continue
+
+        // business returns (1120/1120-S/1065/990) use an EIN, not an SSN —
+        // even if a stray \d{3}-\d{2}-\d{4}-shaped number (e.g. a date or
+        // PTIN) appears on the page, prefer the EIN for these forms
+        const isBusinessForm=/\b(1120-?s?|1065|990)\b/i.test(fullText)
+
+        let idStr:string
+        if(ssnMatches.length>0&&!(isBusinessForm&&einMatch)){
+          idStr=ssnMatches[0]
+          idLabel='Primary SSN'
+          idMatch=ssnMatches[0]
+          if(ssnMatches.length>1) spouseSsn=ssnMatches[1]
+        }else{
+          idStr=einMatch![0]
+          idLabel='EIN'
+          idMatch=einMatch![0]
+        }
+
+        const idLine=lines.find(l=>l.items.some(i=>i.str.includes(idStr)))
+        if(idLine){
+          const idItem=idLine.items.find(i=>i.str.includes(idStr))!
+          // try to find a "name" label on a nearby line above, and read the
+          // value aligned under it on the id line (works well for 1065/1120)
+          const labelLine=lines.find(l=>l.y>idLine.y&&l.y-idLine.y<=40&&l.items.some(i=>/name/i.test(i.str)))
+          if(labelLine){
+            const labelItem=labelLine.items.find(i=>/name/i.test(i.str))!
+            const candidates=idLine.items
+              .filter(i=>i.x>=labelItem.x-15&&i.x<idItem.x-5)
+              .map(i=>i.str.trim()).filter(Boolean)
+            const candidate=candidates.join(' ').trim()
+            if(candidate) nameValue=candidate
+          }
+          if(!nameValue){
+            const others=idLine.items.filter(i=>!i.str.includes(idStr)).map(i=>i.str.trim()).filter(Boolean)
+              .filter(s=>!/^ph:?/i.test(s)&&!/^[a-z]{2,}\d{3,}$/i.test(s)&&!/^\d/.test(s))
+            nameValue=others.join(' ').trim()||undefined
+          }
+        }
+        if(!nameValue){
+          nameValue=lines.slice(0,15)
+            .map(l=>l.items.map(i=>i.str.trim()).filter(Boolean)
+              .filter(s=>!/^ph:?/i.test(s)&&!/^[a-z]{2,}\d{3,}$/i.test(s)&&!/^\d{4}$/.test(s))
+              .join(' ').trim())
+            .find(s=>s.length>3&&!/form|department|treasury|internal revenue|omb|for the year|filing status|^\(/i.test(s))
+        }
+        if(nameValue){
+          // strip a leading client-code token (e.g. "REST7529 ") and a
+          // trailing standalone year (e.g. " 2025") that sometimes share
+          // the same text item as the actual name
+          nameValue=nameValue.replace(/^[A-Za-z]{2,8}\d{2,6}\s+/,'').replace(/\s+\d{4}$/,'').trim()||undefined
+        }
+        break
+      }
+
+      return {idMatch,idLabel,spouseSsn,nameValue}
+  }
+
+  async function openClientInfo(name:string){
+    if(!api) return
+    setClientInfo({loading:true})
+    const clientPath=rootPath.replace(/\\$/,'')+`\\${name}`
+    const found=await api.findTaxForms(clientPath)
+    if(!found?.ok||!found.results||found.results.length===0){ setClientInfo({loading:false,error:'No 1040, 1120, 1065, or 990 found for this client.'}); return }
+
+    let fallback:{info:{idMatch?:string;idLabel:string;spouseSsn?:string;nameValue?:string};formName:string}|undefined
+    try{
+      for(const candidate of found.results){
+        const bytes=await api.readPdf(candidate.path)
+        if(!bytes) continue
+        const info=await extractClientInfo(bytes)
+        if(!info.idMatch) continue
+        const isMasked=info.idMatch.includes('*')||(!!info.spouseSsn&&info.spouseSsn.includes('*'))
+        if(!isMasked){
+          setClientInfo({loading:false,name:info.nameValue,idLabel:info.idLabel,idValue:info.idMatch,spouseSsn:info.spouseSsn,formName:candidate.name})
+          return
+        }
+        if(!fallback) fallback={info,formName:candidate.name}
+      }
+      if(fallback){
+        setClientInfo({loading:false,name:fallback.info.nameValue,idLabel:fallback.info.idLabel,idValue:fallback.info.idMatch,spouseSsn:fallback.info.spouseSsn,formName:fallback.formName})
+      }else{
+        setClientInfo({loading:false,error:'Could not find a Name or SSN/EIN on any tax return for this client.'})
+      }
+    }catch(e:unknown){
+      setClientInfo({loading:false,error:'Could not extract data: '+String(e)})
+    }
+  }
+
   function renderTree(nodes:(DocFile|DocFolder)[],depth=0):React.ReactNode{
     return nodes.map(node=>{
       if(node.type==='folder'){
@@ -1794,7 +1954,7 @@ export default function App(){
             <div
               className="flex items-center gap-1.5 cursor-pointer"
               style={{paddingLeft:10+depth*14,paddingTop:6,paddingBottom:6,paddingRight:8,color:isDrop?C.ochreDeep:C.inkMuted,backgroundColor:isDrop?'#F2DFA8':'transparent',borderLeft:isDrop?`4px solid ${C.ochre}`:'4px solid transparent',borderRadius:2,transition:'background-color 0.1s'}}
-              onClick={()=>toggleFolder(node.path)}
+              onClick={()=>{toggleFolder(node.path);setActiveFolder({name:node.name,path:node.path})}}
               onContextMenu={e=>{e.preventDefault();e.stopPropagation();setCtxFolder({x:e.clientX,y:e.clientY,folder:node})}}
               onDragOver={e=>{e.preventDefault();e.stopPropagation();setDragOver(node.path)}}
               onDragLeave={e=>{e.stopPropagation();setDragOver(null)}}
@@ -1845,6 +2005,9 @@ export default function App(){
               if(!multiSelect.some(f=>f.path===node.path)) setMultiSelect([])
               setCtxMenu({x:e.clientX,y:e.clientY,file:node})
             }}
+            onDoubleClick={()=>{
+              if(!isPdfFile(node.name)&&fileExt(node.name)!=='txt') api?.openFile(node.path)
+            }}
           >
             {/* Bookmark expand button */}
             {showExpandBtn ? (
@@ -1861,7 +2024,15 @@ export default function App(){
             ) : (
               <span style={{width:16,flexShrink:0}}/>
             )}
-            <FileText size={13} style={{color:isActive?C.ochre:C.inkFaint,flexShrink:0}}/>
+            {isWordFile(node.name)?(
+              <FileText size={13} style={{color:isActive?C.ochre:'#2C5F9E',flexShrink:0}}/>
+            ):isExcelFile(node.name)?(
+              <FileSpreadsheet size={13} style={{color:isActive?C.ochre:'#2E7D4F',flexShrink:0}}/>
+            ):fileExt(node.name)==='txt'?(
+              <StickyNote size={13} style={{color:isActive?C.ochre:'#B8870A',flexShrink:0}}/>
+            ):(
+              <FileText size={13} style={{color:isActive?C.ochre:C.inkFaint,flexShrink:0}}/>
+            )}
             <span className="flex-1 truncate sans" title={node.name} style={{fontSize:14,color:isActive?C.ink:C.inkSoft,fontWeight:isActive?600:400,marginLeft:3}}>{node.name}</span>
             {node.annotations.tickmarks.length>0&&(
               <span className="mono px-1 rounded flex-shrink-0" style={{backgroundColor:isActive?C.ochre:C.paperDeep,color:isActive?C.paperLight:C.inkSoft,fontSize:10,fontWeight:600}}>
@@ -1955,7 +2126,7 @@ export default function App(){
                   onFocus={()=>{
                     if(selectedClient){
                       setSearch('')
-                      setSelectedClient(null);setSelectedFile(null);setDocTree([]);setExpandedFolders(new Set());setLoadedFolderPaths(new Set())
+                      setSelectedClient(null);setSelectedFile(null);setDocTree([]);setExpandedFolders(new Set());setLoadedFolderPaths(new Set());setActiveFolder(null)
                     }
                   }}
                   onChange={e=>setSearch(e.target.value)}
@@ -1982,7 +2153,7 @@ export default function App(){
                   {filteredClients.map(name=>{
                     const isSel=selectedClient===name
                     return(
-                      <div key={name} className="flex items-center gap-2 px-3 py-2 cursor-pointer relative row-hover" style={{backgroundColor:isSel?C.ochreSoft:'transparent'}} onClick={()=>{setSelectedClient(name);setSearch('')}}
+                      <div key={name} className="flex items-center gap-2 px-3 py-2 cursor-pointer relative row-hover" style={{backgroundColor:isSel?C.ochreSoft:'transparent'}} onClick={()=>{setSelectedClient(name);setSearch('');setActiveFolder({name,path:rootPath.replace(/\\$/,'')+`\\${name}`})}}
                         onContextMenu={e=>{
                           e.preventDefault();e.stopPropagation()
                           setCtxFolder({x:e.clientX,y:e.clientY,folder:{name,type:'folder',path:rootPath.replace(/\\$/,'')+`\\${name}`,children:[]},hoistOnly:true})
@@ -1993,6 +2164,14 @@ export default function App(){
                           <span className="serif" style={{fontSize:11,fontWeight:600,color:isSel?C.ink:C.inkSoft}}>{name[0].toUpperCase()}</span>
                         </div>
                         <span className="flex-1 truncate sans" title={name} style={{fontSize:14,fontWeight:isSel?600:500,color:C.ink}}>{name}</span>
+                        <button
+                          title="Client info (name & SSN/EIN from tax return)"
+                          onClick={e=>{e.preventDefault();e.stopPropagation();openClientInfo(name)}}
+                          className="p-1 rounded row-hover flex-shrink-0"
+                          style={{color:isSel?C.ochreDeep:C.inkFaint,display:'flex',alignItems:'center'}}
+                        >
+                          <CreditCard size={14}/>
+                        </button>
                       </div>
                     )
                   })}
@@ -2008,6 +2187,24 @@ export default function App(){
                         </span>
                       )}
                       <span className="mono" style={{fontSize:9,color:C.inkFaint}}>{flatFiles(docTree).length}</span>
+                      <button
+                        onClick={async()=>{
+                          const target=activeFolder
+                          if(!target) return
+                          const r=await api?.createNotesFile(target.path)
+                          if(!r?.ok) alert('Could not create notes file: '+(r?.error??'Unknown error'))
+                          else{
+                            refreshDocs(500)
+                            if(r.openError) alert('Notes file created but could not be opened automatically: '+r.openError)
+                          }
+                        }}
+                        disabled={!activeFolder}
+                        title={activeFolder?`Add notes file to "${activeFolder.name}"`:'Select a folder first'}
+                        className="p-1 rounded row-hover"
+                        style={{color:activeFolder?C.inkMuted:'#ccc',display:'flex',alignItems:'center'}}
+                      >
+                        <StickyNote size={16}/>
+                      </button>
                       <button onClick={()=>refreshDocs()} disabled={refreshing} title="Refresh folder" className="p-1 rounded row-hover" style={{color:C.inkFaint,display:'flex',alignItems:'center'}}>
                         <RefreshCw size={20} className={refreshing?'spin':''}/>
                       </button>
@@ -2131,9 +2328,50 @@ export default function App(){
             {/* PDF area */}
             <div className="relative flex-1 overflow-hidden">
               <div ref={pdfScrollRef} onWheel={handlePdfWheel} className="h-full overflow-auto p-6 scrollbar-thin" style={{backgroundColor:C.paperDeep}}>
-                <div className="mx-auto doc-shadow" style={{width:'fit-content'}}>
-                  <PdfViewer pdfBytes={pdfBytes} zoom={zoom} page={currentPage} onPageCount={setPageCount} onPageSize={(w,h)=>setPageSize({w,h})} annotations={annotations} activeMark={activeMark} onAddTickmark={addTickmark} onAddTapeStamp={addTapeStamp} onDeleteTapeStamp={deleteTapeStamp} onMoveTapeStamp={moveTapeStamp} author={author}/>
-                </div>
+                {selectedFile&&fileExt(selectedFile.name)==='txt'?(
+                  <div className="mx-auto flex flex-col" style={{maxWidth:680,height:'100%',gap:8}}>
+                    <div className="flex items-center justify-between">
+                      <div className="serif flex items-center gap-2" style={{fontSize:13,fontWeight:600,color:C.ink}}>
+                        <StickyNote size={15} style={{color:'#B8870A'}}/> {selectedFile.name}
+                      </div>
+                      <div className="mono" style={{fontSize:9,color:C.inkFaint}}>{noteSaving?'Saving…':noteLoaded?'Saved':''}</div>
+                    </div>
+                    <textarea
+                      className="flex-1 sans"
+                      style={{resize:'none',width:'100%',padding:'14px 16px',borderRadius:6,border:`1px solid ${C.rule}`,backgroundColor:C.paperLight,color:C.ink,fontSize:13,lineHeight:1.6,outline:'none'}}
+                      value={noteText??''}
+                      placeholder="Type notes here…"
+                      disabled={!noteLoaded}
+                      onChange={e=>handleNoteChange(e.target.value)}
+                    />
+                  </div>
+                ):selectedFile&&!isPdfFile(selectedFile.name)?(
+                  <div className="mx-auto flex flex-col items-center justify-center" style={{minHeight:'60vh',maxWidth:420,textAlign:'center',gap:14,paddingTop:'12vh'}}>
+                    {isExcelFile(selectedFile.name)
+                      ?<FileSpreadsheet size={48} style={{color:'#2E7D4F'}}/>
+                      :isWordFile(selectedFile.name)
+                      ?<FileText size={48} style={{color:'#2C5F9E'}}/>
+                      :<StickyNote size={48} style={{color:'#B8870A'}}/>}
+                    <div className="serif" style={{fontSize:15,fontWeight:600,color:C.ink}}>{selectedFile.name}</div>
+                    <div className="sans" style={{fontSize:12,color:C.inkMuted}}>
+                      {isExcelFile(selectedFile.name)?'Excel':isWordFile(selectedFile.name)?'Word':'This'} files open in your default program for that file type. Double-click the file in the list, or use the button below.
+                    </div>
+                    <button
+                      className="px-4 py-1.5 rounded sans"
+                      style={{fontSize:12,fontWeight:600,backgroundColor:C.ink,color:C.paperLight}}
+                      onClick={async()=>{
+                        const r=await api?.openFile(selectedFile.path)
+                        if(!r?.ok) alert('Could not open file: '+(r?.error??'No application is associated with this file type.'))
+                      }}
+                    >
+                      Open in default program
+                    </button>
+                  </div>
+                ):(
+                  <div className="mx-auto doc-shadow" style={{width:'fit-content'}}>
+                    <PdfViewer pdfBytes={pdfBytes} zoom={zoom} page={currentPage} onPageCount={setPageCount} onPageSize={(w,h)=>setPageSize({w,h})} annotations={annotations} activeMark={activeMark} onAddTickmark={addTickmark} onAddTapeStamp={addTapeStamp} onDeleteTapeStamp={deleteTapeStamp} onMoveTapeStamp={moveTapeStamp} author={author}/>
+                  </div>
+                )}
               </div>
               {/* Big page-turn arrows */}
               {currentPage>1&&(
@@ -2536,6 +2774,13 @@ export default function App(){
                 </div>
                 <div className="flex justify-end gap-2">
                   <button
+                    className="px-4 py-1.5 rounded sans flex items-center gap-1.5"
+                    style={{fontSize:12,fontWeight:600,border:`1px solid ${C.rule}`,color:C.inkSoft,backgroundColor:C.paper}}
+                    onClick={()=>{ navigator.clipboard.writeText(hoisted.path).catch(()=>{}) }}
+                  >
+                    <Copy size={13}/> Copy Path
+                  </button>
+                  <button
                     className="px-4 py-1.5 rounded sans"
                     style={{fontSize:12,fontWeight:600,backgroundColor:C.ink,color:C.paperLight}}
                     onClick={async()=>{
@@ -2551,6 +2796,60 @@ export default function App(){
                 </div>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Client info modal ── */}
+      {clientInfo&&(
+        <div className="fixed inset-0 z-[100] flex items-center justify-center" style={{backgroundColor:'rgba(26,22,18,0.5)'}} onClick={()=>setClientInfo(null)}>
+          <div className="rounded-lg" style={{backgroundColor:'#FEFCF7',border:`1px solid ${C.rule}`,boxShadow:'0 8px 32px rgba(26,22,18,0.35)',minWidth:360,maxWidth:480,padding:'20px 24px'}} onClick={e=>e.stopPropagation()}>
+            <div className="serif flex items-center gap-2" style={{fontSize:15,fontWeight:600,color:C.ink,marginBottom:12}}>
+              <CreditCard size={16} style={{color:C.ochre}}/> Client Info
+            </div>
+            {clientInfo.loading?(
+              <div className="sans" style={{fontSize:12,color:C.inkMuted}}>Reading tax form…</div>
+            ):clientInfo.error?(
+              <div className="sans" style={{fontSize:12,color:'#B5443A'}}>{clientInfo.error}</div>
+            ):(
+              <>
+                <div className="sans" style={{fontSize:11,color:C.inkMuted,marginBottom:2}}>Name</div>
+                <div className="flex items-center gap-2" style={{marginBottom:10}}>
+                  <div className="serif" style={{fontSize:14,fontWeight:600,color:C.ink}}>{clientInfo.name??'(not found)'}</div>
+                  {clientInfo.name&&(
+                    <button title="Copy name" className="p-1 rounded row-hover" style={{color:C.inkFaint,display:'flex',alignItems:'center'}} onClick={()=>{navigator.clipboard.writeText(clientInfo.name!).catch(()=>{})}}>
+                      <Copy size={13}/>
+                    </button>
+                  )}
+                </div>
+                <div className="sans" style={{fontSize:11,color:C.inkMuted,marginBottom:2}}>{clientInfo.idLabel??'ID'}</div>
+                <div className="flex items-center gap-2" style={{marginBottom:clientInfo.spouseSsn?2:10}}>
+                  <div className="mono" style={{fontSize:14,fontWeight:600,color:C.ink}}>{clientInfo.idValue??'(not found)'}</div>
+                  {clientInfo.idValue&&(
+                    <button title="Copy" className="p-1 rounded row-hover" style={{color:C.inkFaint,display:'flex',alignItems:'center'}} onClick={()=>{navigator.clipboard.writeText(clientInfo.idValue!).catch(()=>{})}}>
+                      <Copy size={13}/>
+                    </button>
+                  )}
+                </div>
+                {clientInfo.spouseSsn&&(
+                  <>
+                    <div className="sans" style={{fontSize:11,color:C.inkMuted,marginBottom:2}}>Spouse SSN</div>
+                    <div className="flex items-center gap-2" style={{marginBottom:10}}>
+                      <div className="mono" style={{fontSize:14,fontWeight:600,color:C.ink}}>{clientInfo.spouseSsn}</div>
+                      <button title="Copy" className="p-1 rounded row-hover" style={{color:C.inkFaint,display:'flex',alignItems:'center'}} onClick={()=>{navigator.clipboard.writeText(clientInfo.spouseSsn!).catch(()=>{})}}>
+                        <Copy size={13}/>
+                      </button>
+                    </div>
+                  </>
+                )}
+                <div className="sans" style={{fontSize:10,color:C.inkFaint}}>
+                  Extracted from <strong>{clientInfo.formName}</strong> — please verify against the source document.
+                </div>
+              </>
+            )}
+            <div className="flex justify-end" style={{marginTop:16}}>
+              <button className="px-4 py-1.5 rounded sans" style={{fontSize:12,fontWeight:600,backgroundColor:C.ink,color:C.paperLight}} onClick={()=>setClientInfo(null)}>Close</button>
+            </div>
           </div>
         </div>
       )}

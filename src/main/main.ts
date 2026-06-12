@@ -142,7 +142,7 @@ function shallowRead(dir: string): unknown[] {
         if (e.name === 'Private') return null
         return { name: e.name, type: 'folder', path: fullPath, children: [] }
       }
-      if (/\.(pdf)$/i.test(e.name)) {
+      if (/\.(pdf|docx?|xlsx?|txt)$/i.test(e.name)) {
         return { name: e.name, type: 'file', path: fullPath, annotations: { tickmarks: [], signoffs: [] } }
       }
       return null
@@ -439,6 +439,137 @@ ipcMain.handle('fs:renameFolder', async (_e, folderPath: string, newName: string
       }
     )
   })
+})
+
+// ── Open a file in its default native application ────────────────────────────
+ipcMain.handle('fs:openFile', async (_e, filePath: string) => {
+  try {
+    if (!fs.existsSync(filePath)) return { ok: false, error: 'File not found.' }
+    const result = await shell.openPath(filePath)
+    if (result) return { ok: false, error: result || 'No application is associated with this file type.' }
+    return { ok: true }
+  } catch (e: unknown) {
+    return { ok: false, error: String(e) }
+  }
+})
+
+// ── Create a Notes text file in a folder (named "<year> Notes.txt" or "Notes.txt") ──
+ipcMain.handle('fs:createNotesFile', async (_e, folderPath: string) => {
+  try {
+    const folderName = path.basename(folderPath)
+    const yearMatch = folderName.match(/\d{4}/)
+    const baseName = yearMatch ? `${yearMatch[0]} Notes` : 'Notes'
+    let dest = path.join(folderPath, `${baseName}.txt`)
+    let n = 2
+    while (fs.existsSync(dest)) { dest = path.join(folderPath, `${baseName} (${n}).txt`); n++ }
+    fs.writeFileSync(dest, '', 'utf8')
+    const result = await shell.openPath(dest)
+    if (result) return { ok: true, path: dest, openError: result }
+    return { ok: true, path: dest }
+  } catch (e: unknown) {
+    return { ok: false, error: String(e) }
+  }
+})
+
+// ── Read / write a plain text file (Notes) ────────────────────────────────────
+ipcMain.handle('fs:readTextFile', async (_e, filePath: string) => {
+  try { return { ok: true, content: fs.readFileSync(filePath, 'utf8') } }
+  catch (e: unknown) { return { ok: false, error: String(e) } }
+})
+
+ipcMain.handle('fs:writeTextFile', async (_e, filePath: string, content: string) => {
+  try { fs.writeFileSync(filePath, content, 'utf8'); return { ok: true } }
+  catch (e: unknown) { return { ok: false, error: String(e) } }
+})
+
+// ── Find a client's 1040/1120/1065/990 (most recent year) ────────────────────
+function findTaxFormSync(clientPath: string): { path: string; name: string; year: string | null } | null {
+  const formRe     = /(1040|1120s?|1065|990)/i
+  const excludeRe  = /(1040-?(es|v|x|sr)|1120-?(w|x)|990-?(es|w|t|x|pf)|1065-?x|8879|8453|authorization|engagement|e-?file)/i
+  const taxRetRe   = /tax\s*return/i
+  const amendedRe  = /amend/i
+  const federalRe  = /\b(us|u\.s\.|federal|fed)\b/i
+  const reviewRe   = /review|draft|proforma/i
+  const results: { path: string; name: string; year: string | null; score: number }[] = []
+
+  function walk(dir: string, depth: number, year: string | null) {
+    if (depth > 5) return
+    let entries: fs.Dirent[]
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      const full = path.join(dir, e.name)
+      if (e.isDirectory()) {
+        if (e.name === 'Private') continue
+        const yr = /^\d{4}$/.test(e.name) ? e.name : year
+        walk(full, depth + 1, yr)
+      } else if (/\.pdf$/i.test(e.name)) {
+        if (amendedRe.test(e.name)) continue
+        let score = 0
+        if (formRe.test(e.name) && !excludeRe.test(e.name)) score += 100
+        else if (taxRetRe.test(e.name)) score += 10
+        else continue
+        if (federalRe.test(e.name)) score += 50
+        if (reviewRe.test(e.name)) score -= 200
+        results.push({ path: full, name: e.name, year, score })
+      }
+    }
+  }
+  walk(clientPath, 0, null)
+  if (results.length === 0) return null
+  results.sort((a, b) => (b.year ?? '0').localeCompare(a.year ?? '0') || b.score - a.score)
+  return results[0]
+}
+
+function findTaxFormsSync(clientPath: string): { path: string; name: string; year: string | null }[] {
+  const formRe     = /(1040|1120s?|1065|990)/i
+  const excludeRe  = /(1040-?(es|v|x|sr)|1120-?(w|x)|990-?(es|w|t|x|pf)|1065-?x|8879|8453|authorization|engagement|e-?file)/i
+  const taxRetRe   = /tax\s*return/i
+  const amendedRe  = /amend/i
+  const federalRe  = /\b(us|u\.s\.|federal|fed)\b/i
+  const reviewRe   = /review|draft|proforma/i
+  const results: { path: string; name: string; year: string | null; score: number }[] = []
+
+  function walk(dir: string, depth: number, year: string | null) {
+    if (depth > 5) return
+    let entries: fs.Dirent[]
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      const full = path.join(dir, e.name)
+      if (e.isDirectory()) {
+        if (e.name === 'Private') continue
+        const yr = /^\d{4}$/.test(e.name) ? e.name : year
+        walk(full, depth + 1, yr)
+      } else if (/\.pdf$/i.test(e.name)) {
+        if (amendedRe.test(e.name)) continue
+        let score = 0
+        if (formRe.test(e.name) && !excludeRe.test(e.name)) score += 100
+        else if (taxRetRe.test(e.name)) score += 10
+        else continue
+        if (federalRe.test(e.name)) score += 50
+        if (reviewRe.test(e.name)) score -= 200
+        results.push({ path: full, name: e.name, year, score })
+      }
+    }
+  }
+  walk(clientPath, 0, null)
+  results.sort((a, b) => (b.year ?? '0').localeCompare(a.year ?? '0') || b.score - a.score)
+  return results
+}
+
+ipcMain.handle('fs:findTaxForm', async (_e, clientPath: string) => {
+  try {
+    return { ok: true, result: findTaxFormSync(clientPath) }
+  } catch (e: unknown) {
+    return { ok: false, error: String(e) }
+  }
+})
+
+ipcMain.handle('fs:findTaxForms', async (_e, clientPath: string) => {
+  try {
+    return { ok: true, results: findTaxFormsSync(clientPath) }
+  } catch (e: unknown) {
+    return { ok: false, error: String(e) }
+  }
 })
 
 // ── Hoist folder: copy a folder's full contents to a temp "cabinet" ──────────
