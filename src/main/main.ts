@@ -585,8 +585,8 @@ ipcMain.handle('fs:hoistFolder', async (_e, folderPath: string) => {
   }
 })
 
-// ── Unhoist: permanently delete the contents of a hoisted temp cabinet ───────
-ipcMain.handle('fs:unhoistFolder', async (_e, hoistPath: string) => {
+// ── Unhoist: copy back any newly created files, then delete the temp cabinet ─
+ipcMain.handle('fs:unhoistFolder', async (_e, hoistPath: string, originalFolder: string) => {
   try {
     // Only ever delete inside our own temp hoist directory
     const hoistRoot = path.join(app.getPath('temp'), 'bellomy-hoist')
@@ -594,6 +594,29 @@ ipcMain.handle('fs:unhoistFolder', async (_e, hoistPath: string) => {
     if (!resolved.startsWith(path.resolve(hoistRoot) + path.sep)) {
       return { ok: false, error: 'Refusing to delete outside the hoist temp directory.' }
     }
+
+    // Copy back any files/folders that were newly created in the hoisted
+    // copy and don't exist in the original folder
+    function copyNewEntries(srcDir: string, destDir: string) {
+      let entries: fs.Dirent[]
+      try { entries = fs.readdirSync(srcDir, { withFileTypes: true }) } catch { return }
+      for (const e of entries) {
+        const srcFull = path.join(srcDir, e.name)
+        const destFull = path.join(destDir, e.name)
+        if (e.isDirectory()) {
+          if (fs.existsSync(destFull)) {
+            copyNewEntries(srcFull, destFull)
+          } else {
+            fs.cpSync(srcFull, destFull, { recursive: true })
+          }
+        } else if (!fs.existsSync(destFull)) {
+          fs.mkdirSync(destDir, { recursive: true })
+          fs.cpSync(srcFull, destFull)
+        }
+      }
+    }
+    if (originalFolder) copyNewEntries(resolved, originalFolder)
+
     // Remove the per-hoist parent directory (one level up from the copied folder)
     const hoistDir = path.dirname(resolved)
     fs.rmSync(hoistDir, { recursive: true, force: true })

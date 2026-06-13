@@ -4,7 +4,7 @@ import {
   ChevronRight, ChevronDown, FileSignature, ZoomIn, ZoomOut, Maximize2,
   MessageSquare, PanelRightClose, PanelRightOpen, PanelLeftClose, PanelLeftOpen,
   Clock, Layers, Settings, ScanLine, ArrowLeft, Merge, Printer,
-  RefreshCw, Trash2, Calculator, FileSpreadsheet, StickyNote, Copy, CreditCard,
+  RefreshCw, Trash2, Calculator, FileSpreadsheet, StickyNote, Copy, CreditCard, RotateCw,
 } from 'lucide-react'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -12,7 +12,8 @@ import {
 interface Tickmark  { id:string; page:number; x:number; y:number; type:string; note:string; author:string; createdAt:string }
 interface Signoff   { page:number; role:string; author:string; signedAt:string }
 interface TapeStamp { id:string; page:number; x:number; y:number; entries:{value:number}[]; author:string; createdAt:string }
-interface Annotations { tickmarks:Tickmark[]; signoffs:Signoff[]; tapeStamps?:TapeStamp[] }
+interface Highlight { id:string; page:number; x:number; y:number; w:number; h:number; author:string; createdAt:string }
+interface Annotations { tickmarks:Tickmark[]; signoffs:Signoff[]; tapeStamps?:TapeStamp[]; highlights?:Highlight[] }
 interface DocFile  { name:string; type:'file';   path:string; annotations:Annotations }
 interface DocFolder{ name:string; type:'folder'; path:string; children:(DocFile|DocFolder)[] }
 interface Bookmark { title:string; page:number|null; items:Bookmark[] }
@@ -46,7 +47,7 @@ const api = (window as unknown as { electronAPI?: {
   savePdf:        (p:string,b:ArrayBuffer)=>Promise<{ok:boolean;error?:string}>
   renameFolder:   (p:string,n:string)=>Promise<{ok:boolean;error?:string;newPath?:string}>
   hoistFolder:    (p:string)=>Promise<{ok:boolean;error?:string;path?:string}>
-  unhoistFolder:  (p:string)=>Promise<{ok:boolean;error?:string}>
+  unhoistFolder:  (p:string,originalFolder:string)=>Promise<{ok:boolean;error?:string}>
   openFile:       (p:string)=>Promise<{ok:boolean;error?:string}>
   createNotesFile:(p:string)=>Promise<{ok:boolean;error?:string;path?:string;openError?:string}>
   readTextFile:   (p:string)=>Promise<{ok:boolean;error?:string;content?:string}>
@@ -702,11 +703,16 @@ interface PdfViewerProps {
   onAddTapeStamp:(s:Omit<TapeStamp,'id'|'author'|'createdAt'>)=>void
   onDeleteTapeStamp:(id:string)=>void
   onMoveTapeStamp:(id:string,x:number,y:number)=>void
+  onAddHighlight:(h:Omit<Highlight,'id'|'author'|'createdAt'>)=>void
+  onDeleteHighlight:(id:string)=>void
   author:string
 }
 
-function PdfViewer({pdfBytes,zoom,page,onPageCount,onPageSize,annotations,activeMark,onAddTickmark,onAddTapeStamp,onDeleteTapeStamp,onMoveTapeStamp,author}:PdfViewerProps){
+function PdfViewer({pdfBytes,zoom,page,onPageCount,onPageSize,annotations,activeMark,onAddTickmark,onAddTapeStamp,onDeleteTapeStamp,onMoveTapeStamp,onAddHighlight,onDeleteHighlight,author}:PdfViewerProps){
   const [dragStamp,setDragStamp]=useState<{id:string;x:number;y:number}|null>(null)
+  const [highlightMode,setHighlightMode]=useState(false)
+  const [drawRect,setDrawRect]=useState<{x:number;y:number;w:number;h:number}|null>(null)
+  const [ctxMenu,setCtxMenu]=useState<{x:number;y:number}|null>(null)
   const canvasRef=useRef<HTMLCanvasElement>(null)
   const renderTask=useRef<{cancel:()=>void;promise:Promise<any>}|null>(null)
   const renderSeq=useRef(0) // increments on every render attempt; lets async callbacks detect staleness
@@ -779,9 +785,43 @@ function PdfViewer({pdfBytes,zoom,page,onPageCount,onPageSize,annotations,active
   }
 
   function handleClick(e:React.MouseEvent<HTMLDivElement>){
-    if(!activeMark) return // no mark type selected — clicking does nothing
+    setCtxMenu(null)
+    if(!activeMark||highlightMode) return // no mark type selected — clicking does nothing
     const c=coordsFromEvent(e); if(!c) return
     onAddTickmark({page,x:c.x,y:c.y,type:activeMark,note:author})
+  }
+
+  function startDrawHighlight(e:React.MouseEvent<HTMLDivElement>){
+    setCtxMenu(null)
+    if(!highlightMode) return
+    e.preventDefault()
+    e.stopPropagation()
+    const canvas=canvasRef.current; if(!canvas) return
+    const rect=canvas.getBoundingClientRect()
+    const clamp=(v:number)=>Math.max(0,Math.min(100,v))
+    const posFrom=(ev:{clientX:number;clientY:number})=>({x:clamp(((ev.clientX-rect.left)/rect.width)*100), y:clamp(((ev.clientY-rect.top)/rect.height)*100)})
+    const start=posFrom(e)
+    setDrawRect({x:start.x,y:start.y,w:0,h:0})
+    function onMove(ev:MouseEvent){
+      const p=posFrom(ev)
+      setDrawRect({x:Math.min(start.x,p.x),y:Math.min(start.y,p.y),w:Math.abs(p.x-start.x),h:Math.abs(p.y-start.y)})
+    }
+    function onUp(ev:MouseEvent){
+      window.removeEventListener('mousemove',onMove)
+      window.removeEventListener('mouseup',onUp)
+      const p=posFrom(ev)
+      const finalRect={x:Math.min(start.x,p.x),y:Math.min(start.y,p.y),w:Math.abs(p.x-start.x),h:Math.abs(p.y-start.y)}
+      if(finalRect.w>0.5&&finalRect.h>0.5) onAddHighlight({page,...finalRect})
+      setDrawRect(null)
+    }
+    window.addEventListener('mousemove',onMove)
+    window.addEventListener('mouseup',onUp)
+  }
+
+  function handleContextMenu(e:React.MouseEvent<HTMLDivElement>){
+    e.preventDefault()
+    e.stopPropagation()
+    setCtxMenu({x:e.clientX,y:e.clientY})
   }
 
   function handleDrop(e:React.DragEvent<HTMLDivElement>){
@@ -800,11 +840,14 @@ function PdfViewer({pdfBytes,zoom,page,onPageCount,onPageSize,annotations,active
 
   const pageAnns=annotations.tickmarks.filter(t=>t.page===page)
   const pageStamps=(annotations.tapeStamps??[]).filter(s=>s.page===page)
+  const pageHighlights=(annotations.highlights??[]).filter(h=>h.page===page)
   const checkDefs:{[k:string]:{color:string}}=Object.fromEntries(CHECKS.map(c=>[c.id,{color:c.color}]))
 
   return(
-    <div className="relative inline-block" style={{cursor:activeMark?'crosshair':'default'}}
+    <div className="relative inline-block" style={{cursor:highlightMode?'crosshair':activeMark?'crosshair':'default'}}
       onClick={handleClick}
+      onMouseDown={startDrawHighlight}
+      onContextMenu={handleContextMenu}
       onDragOver={e=>e.preventDefault()}
       onDrop={handleDrop}
     >
@@ -812,6 +855,29 @@ function PdfViewer({pdfBytes,zoom,page,onPageCount,onPageSize,annotations,active
         ?<canvas ref={canvasRef} style={{display:'block'}}/>
         :<div style={{width:540,minHeight:700,backgroundColor:'#FEFCF7',display:'flex',alignItems:'center',justifyContent:'center',color:C.inkFaint,fontFamily:'Georgia,serif',fontSize:13}}>No document selected</div>
       }
+      {pageHighlights.map(hl=>(
+        <div key={hl.id} className="absolute group" style={{left:`${hl.x}%`,top:`${hl.y}%`,width:`${hl.w}%`,height:`${hl.h}%`,backgroundColor:'rgba(255,255,0,0.5)',mixBlendMode:'multiply',zIndex:5,cursor:'pointer'}}
+          title="Click to remove highlight"
+          onClick={e=>{e.stopPropagation();onDeleteHighlight(hl.id)}}
+          onMouseDown={e=>e.stopPropagation()}
+        />
+      ))}
+      {drawRect&&(
+        <div className="absolute" style={{left:`${drawRect.x}%`,top:`${drawRect.y}%`,width:`${drawRect.w}%`,height:`${drawRect.h}%`,backgroundColor:'rgba(255,255,0,0.5)',mixBlendMode:'multiply',border:'1px dashed #C9A227',zIndex:6,pointerEvents:'none'}}/>
+      )}
+      {ctxMenu&&(
+        <div className="fixed z-50 rounded overflow-hidden" style={{left:ctxMenu.x,top:ctxMenu.y,backgroundColor:'#FEFCF7',border:`1px solid ${C.rule}`,boxShadow:'0 4px 16px rgba(26,22,18,0.15)',minWidth:180}}
+          onClick={e=>e.stopPropagation()}
+          onMouseDown={e=>e.stopPropagation()}
+          onMouseLeave={()=>setCtxMenu(null)}
+        >
+          <button className="w-full text-left px-3 py-2 sans" style={{fontSize:12,color:C.ink,backgroundColor:highlightMode?C.ochre+'22':'transparent'}}
+            onClick={()=>{setHighlightMode(m=>!m);setCtxMenu(null)}}
+          >
+            {highlightMode?'✓ Highlighter (click to disable)':'Highlighter tool'}
+          </button>
+        </div>
+      )}
       {pageAnns.map(tm=>{
         const def=checkDefs[tm.type]??{color:C.ochre}
         return(
@@ -1579,6 +1645,23 @@ export default function App(){
     })
   },[selectedFile])
 
+  const addHighlight=useCallback((partial:Omit<Highlight,'id'|'author'|'createdAt'>)=>{
+    const hl:Highlight={...partial,id:crypto.randomUUID(),author,createdAt:new Date().toISOString()}
+    setAnnotations(prev=>{
+      const next={...prev,highlights:[...(prev.highlights??[]),hl]}
+      if(api&&selectedFile) api.saveAnnotations(selectedFile.path,next)
+      return next
+    })
+  },[author,selectedFile])
+
+  const deleteHighlight=useCallback((id:string)=>{
+    setAnnotations(prev=>{
+      const next={...prev,highlights:(prev.highlights??[]).filter(h=>h.id!==id)}
+      if(api&&selectedFile) api.saveAnnotations(selectedFile.path,next)
+      return next
+    })
+  },[selectedFile])
+
   // Keyboard shortcuts
   useEffect(()=>{
     function onKey(e:KeyboardEvent){
@@ -1768,6 +1851,32 @@ export default function App(){
       const r=await api.printBytes(buf)
       if(!r.ok) alert('Print failed: '+(r.error??''))
     }catch(e){alert('Print failed: '+String(e))}
+  }
+
+  const [rotating,setRotating]=useState(false)
+  async function handleRotatePage(){
+    if(!api||!selectedFile||!pdfBytes||rotating) return
+    setRotating(true)
+    try{
+      const {PDFDocument,degrees}=await import('pdf-lib')
+      // pdfBytes may have been transferred (detached) to the pdf.js worker,
+      // so re-read fresh bytes from disk before editing
+      const fresh=await api.readPdf(selectedFile.path)
+      if(!fresh){ alert('Could not read PDF for rotation.'); return }
+      const doc=await PDFDocument.load(fresh)
+      const page=doc.getPage(currentPage-1)
+      const current=page.getRotation().angle
+      page.setRotation(degrees((current+90)%360))
+      const saved=await doc.save({useObjectStreams:false})
+      const buf=saved.buffer.slice(saved.byteOffset,saved.byteOffset+saved.byteLength) as ArrayBuffer
+      const r=await api.savePdf(selectedFile.path,buf)
+      if(!r.ok){ alert('Could not save rotation: '+(r.error??'Unknown error')); return }
+      setPdfBytes(buf)
+    }catch(e){
+      alert('Rotate failed: '+String(e))
+    }finally{
+      setRotating(false)
+    }
   }
 
   async function handleCombine(){
@@ -2315,6 +2424,7 @@ export default function App(){
             <span className="mono" style={{fontSize:11,color:C.ink,fontWeight:600,minWidth:36,textAlign:'center'}}>{zoom}%</span>
             <button onClick={()=>setZoom(z=>Math.min(200,z+25))} className="tool-btn" style={{color:C.inkSoft,padding:'5px 6px'}}><ZoomIn size={13}/></button>
             <button onClick={fitToPage} title="Fit to page" className="tool-btn" style={{color:C.inkSoft,padding:'5px 6px'}}><Maximize2 size={13}/></button>
+            <button onClick={handleRotatePage} disabled={!pdfBytes||rotating} title="Rotate this page 90° and save" className="tool-btn" style={{color:pdfBytes?C.inkSoft:'#bbb',padding:'5px 6px'}}><RotateCw size={13}/></button>
 
             <div style={{width:1,height:18,backgroundColor:C.rule,margin:'0 4px'}}/>
 
@@ -2369,7 +2479,7 @@ export default function App(){
                   </div>
                 ):(
                   <div className="mx-auto doc-shadow" style={{width:'fit-content'}}>
-                    <PdfViewer pdfBytes={pdfBytes} zoom={zoom} page={currentPage} onPageCount={setPageCount} onPageSize={(w,h)=>setPageSize({w,h})} annotations={annotations} activeMark={activeMark} onAddTickmark={addTickmark} onAddTapeStamp={addTapeStamp} onDeleteTapeStamp={deleteTapeStamp} onMoveTapeStamp={moveTapeStamp} author={author}/>
+                    <PdfViewer pdfBytes={pdfBytes} zoom={zoom} page={currentPage} onPageCount={setPageCount} onPageSize={(w,h)=>setPageSize({w,h})} annotations={annotations} activeMark={activeMark} onAddTickmark={addTickmark} onAddTapeStamp={addTapeStamp} onDeleteTapeStamp={deleteTapeStamp} onMoveTapeStamp={moveTapeStamp} onAddHighlight={addHighlight} onDeleteHighlight={deleteHighlight} author={author}/>
                   </div>
                 )}
               </div>
@@ -2785,7 +2895,7 @@ export default function App(){
                     style={{fontSize:12,fontWeight:600,backgroundColor:C.ink,color:C.paperLight}}
                     onClick={async()=>{
                       setHoisting(true)
-                      const r=await api?.unhoistFolder(hoisted.path)
+                      const r=await api?.unhoistFolder(hoisted.path,hoisted.folder)
                       setHoisting(false)
                       if(!r?.ok) alert('Could not unhoist: '+(r?.error??'Unknown error'))
                       setHoisted(null)
