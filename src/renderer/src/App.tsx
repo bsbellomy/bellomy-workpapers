@@ -1434,6 +1434,18 @@ export default function App(){
     api?.getConfig('leftPanelWidth').then(v=>{ if(typeof v==='number'&&v>0) setLeftWidth(v) })
   },[])
 
+  // Load/save root path
+  useEffect(()=>{
+    api?.getConfig('rootPath').then(v=>{ if(typeof v==='string'&&v) setRootPath(v) })
+  },[])
+
+  function changeRootPath(p:string){
+    setRootPath(p)
+    setSelectedClient(null)
+    setSelectedFile(null)
+    api?.setConfig('rootPath',p)
+  }
+
   function startResizeLeft(e:React.MouseEvent){
     e.preventDefault()
     setResizingLeft(true)
@@ -1703,7 +1715,7 @@ export default function App(){
   const pickFolder=async()=>{
     if(!api) return
     const p=await api.pickFolder()
-    if(p){setRootPath(p);setSelectedClient(null);setSelectedFile(null)}
+    if(p) changeRootPath(p)
   }
 
   // Rename — preserves original extension
@@ -2329,7 +2341,15 @@ export default function App(){
                 <div className="pulse" style={{width:5,height:5,borderRadius:'50%',backgroundColor:'#7DBE5C'}}/>
                 <span className="mono" style={{fontSize:9,color:C.inkMuted}}>{rootPath}</span>
               </div>
-              <span className="mono" style={{fontSize:9,color:C.inkFaint}}>v0.1.0</span>
+              <div className="flex items-center gap-1">
+                {['T:\\','Z:\\'].map(drive=>(
+                  <button key={drive} onClick={()=>changeRootPath(drive)}
+                    className="mono"
+                    style={{fontSize:9,padding:'1px 5px',borderRadius:3,border:`1px solid ${rootPath===drive?C.ochre:C.rule}`,backgroundColor:rootPath===drive?C.ochreSoft:'transparent',color:rootPath===drive?C.ochreDeep:C.inkFaint,fontWeight:rootPath===drive?700:400,cursor:'pointer'}}
+                    title={`Switch to ${drive}`}
+                  >{drive.replace('\\','')}</button>
+                ))}
+              </div>
             </div>
           </div>
         ):(
