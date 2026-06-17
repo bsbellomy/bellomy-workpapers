@@ -281,7 +281,11 @@ ipcMain.handle('fs:startScan', (_e, destFolder: string, useNativeUI: boolean, dp
   if (!fs.existsSync(helperPath))
     return Promise.resolve({ ok: false, error: 'Scanner helper not found. Please reinstall the app.' })
 
-  const args = ['scan', destFolder]
+  // Scan to local inbox first so ScanHelper.exe never needs to access the
+  // TaxDome virtual drive (or any mapped network drive), which may not be
+  // visible to spawned child processes on some machines.
+  const localInbox = scanInboxPath()
+  const args = ['scan', localInbox]
   if (useNativeUI) args.push('--ui')
   args.push('--dpi', String(dpi ?? 200))
   if (colorMode === 'color') args.push('--color')
@@ -312,8 +316,19 @@ ipcMain.handle('fs:startScan', (_e, destFolder: string, useNativeUI: boolean, dp
       if (code === 0) {
         const result = tryParse(stdout)
         if (result?.ok) {
-          mainWin?.webContents.send('scan:fileArrived', { name: result.name })
-          resolve({ ok: true })
+          // Copy from local inbox to the actual destination (runs in the main
+          // process which has full access to the TaxDome virtual drive).
+          try {
+            if (!fs.existsSync(destFolder)) fs.mkdirSync(destFolder, { recursive: true })
+            const src = path.join(localInbox, result.name)
+            const dest = path.join(destFolder, result.name)
+            fs.copyFileSync(src, dest)
+            try { fs.unlinkSync(src) } catch {}
+            mainWin?.webContents.send('scan:fileArrived', { name: result.name })
+            resolve({ ok: true })
+          } catch (copyErr: unknown) {
+            resolve({ ok: false, error: `Scan succeeded but could not save to destination: ${String(copyErr)}` })
+          }
         } else {
           resolve({ ok: false, error: result?.error ?? 'Scan failed' })
         }
