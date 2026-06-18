@@ -1562,6 +1562,13 @@ export default function App(){
     api.listClients(rootPath).then(setClients)
   },[rootPath])
 
+  // Helper: remove specific file paths anywhere in the tree (used for optimistic UI updates after move)
+  function removeFilesFromTree(tree:(DocFile|DocFolder)[], paths:string[]): (DocFile|DocFolder)[] {
+    return tree
+      .filter(n=>!(n.type==='file'&&paths.includes(n.path)))
+      .map(n=>n.type==='folder'?{...n,children:removeFilesFromTree(n.children,paths)}:n)
+  }
+
   // Helper: replace children of a folder node deep in the tree
   function injectChildren(tree:(DocFile|DocFolder)[], folderPath:string, children:(DocFile|DocFolder)[]): (DocFile|DocFolder)[] {
     return tree.map(n=>{
@@ -1911,14 +1918,17 @@ export default function App(){
       ? multiSelect.map(f=>f.path)
       : [src]
     const errors:string[]=[]
+    const moved:string[]=[]
     for(const fp of filesToMove){
       const r=await api.moveFile(fp,destFolder)
       if(!r.ok) errors.push(r.error??fp)
+      else moved.push(fp)
     }
     if(errors.length) alert(`Some files could not be moved:\n${errors.join('\n')}`)
+    if(moved.length) setDocTree(prev=>removeFilesFromTree(prev,moved))
     if(filesToMove.includes(selectedFile?.path??'')) setSelectedFile(null)
     setMultiSelect([])
-    refreshDocs(800)
+    refreshDocs(1500)
   }
 
   // Combine with file above

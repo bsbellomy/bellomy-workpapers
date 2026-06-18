@@ -142,7 +142,7 @@ function shallowRead(dir: string): unknown[] {
         if (e.name === 'Private') return null
         return { name: e.name, type: 'folder', path: fullPath, children: [] }
       }
-      if (/\.(pdf|docx?|xlsx?|txt)$/i.test(e.name)) {
+      if (/\.(pdf|docx?|xlsx?|txt|jpe?g|png|gif|bmp|webp)$/i.test(e.name)) {
         return { name: e.name, type: 'file', path: fullPath, annotations: { tickmarks: [], signoffs: [] } }
       }
       return null
