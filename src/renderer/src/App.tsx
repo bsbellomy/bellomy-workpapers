@@ -22,6 +22,7 @@ function fileExt(name:string):string { return (name.match(/\.([^.]+)$/)?.[1]??''
 function isPdfFile(name:string):boolean { return fileExt(name)==='pdf' }
 function isWordFile(name:string):boolean { return fileExt(name)==='doc'||fileExt(name)==='docx' }
 function isExcelFile(name:string):boolean { return fileExt(name)==='xls'||fileExt(name)==='xlsx' }
+function isImageFile(name:string):boolean { const e=fileExt(name); return ['jpg','jpeg','png','gif','bmp','webp'].includes(e) }
 
 const api = (window as unknown as { electronAPI?: {
   listClients:    (p:string)=>Promise<string[]>
@@ -505,18 +506,36 @@ function EditFolderModal({folder,docTree,onClose,onSaved}:{folder:DocFolder;docT
           setProgress(10+Math.round(i/selected.length*60))
           const bytes=await api.readPdf(selected[i].path)
           if(!bytes) continue
-          const doc=await PDFDocument.load(bytes)
-          const pages=await merged.copyPages(doc,doc.getPageIndices())
-          pages.forEach(p=>merged.addPage(p))
+          const ext=fileExt(selected[i].name)
+          if(ext==='jpg'||ext==='jpeg'){
+            const img=await merged.embedJpg(bytes)
+            const pg=merged.addPage([img.width,img.height])
+            pg.drawImage(img,{x:0,y:0,width:img.width,height:img.height})
+          } else if(ext==='png'){
+            const img=await merged.embedPng(bytes)
+            const pg=merged.addPage([img.width,img.height])
+            pg.drawImage(img,{x:0,y:0,width:img.width,height:img.height})
+          } else {
+            try{
+              const doc=await PDFDocument.load(bytes)
+              const pages=await merged.copyPages(doc,doc.getPageIndices())
+              pages.forEach(p=>merged.addPage(p))
+            }catch{ continue }
+          }
         }
         setProgress(75)
         const saved=await merged.save({useObjectStreams:false})
         const keepIdx=Math.min(outputFileIdx,selected.length-1)
-        const keepPath=selected[keepIdx].path
+        let keepPath=selected[keepIdx].path
+        const keepIsImage=isImageFile(selected[keepIdx].name)
+        if(keepIsImage){
+          // derive a .pdf path in the same folder
+          keepPath=keepPath.replace(/\.[^.]+$/,'.pdf')
+        }
         const r=await api.savePdf(keepPath,saved.buffer.slice(saved.byteOffset,saved.byteOffset+saved.byteLength))
         if(!r.ok) throw new Error(r.error)
-        // Delete the other selected files
-        for(const f of selected){ if(f.path!==keepPath) await api.deleteFile(f.path) }
+        // Delete all selected files (including the original image if keepIsImage)
+        for(const f of selected){ await api.deleteFile(f.path) }
       } else if(action==='move'){
         for(let i=0;i<selected.length;i++){
           setProgress(10+Math.round(i/selected.length*85))
@@ -713,6 +732,8 @@ function PdfViewer({pdfBytes,zoom,page,onPageCount,onPageSize,annotations,active
   const [highlightMode,setHighlightMode]=useState(false)
   const [drawRect,setDrawRect]=useState<{x:number;y:number;w:number;h:number}|null>(null)
   const [ctxMenu,setCtxMenu]=useState<{x:number;y:number}|null>(null)
+  const [rulerMode,setRulerMode]=useState(false)
+  const [rulerY,setRulerY]=useState<number|null>(null)
   const canvasRef=useRef<HTMLCanvasElement>(null)
   const renderTask=useRef<{cancel:()=>void;promise:Promise<any>}|null>(null)
   const renderSeq=useRef(0) // increments on every render attempt; lets async callbacks detect staleness
@@ -786,7 +807,8 @@ function PdfViewer({pdfBytes,zoom,page,onPageCount,onPageSize,annotations,active
 
   function handleClick(e:React.MouseEvent<HTMLDivElement>){
     setCtxMenu(null)
-    if(!activeMark||highlightMode) return // no mark type selected — clicking does nothing
+    if(rulerMode){ const c=coordsFromEvent(e); if(c) setRulerY(c.y); return }
+    if(!activeMark||highlightMode) return
     const c=coordsFromEvent(e); if(!c) return
     onAddTickmark({page,x:c.x,y:c.y,type:activeMark,note:author})
   }
@@ -818,6 +840,22 @@ function PdfViewer({pdfBytes,zoom,page,onPageCount,onPageSize,annotations,active
     window.addEventListener('mouseup',onUp)
   }
 
+  function startDragRuler(e:React.MouseEvent){
+    e.stopPropagation()
+    e.preventDefault()
+    const canvas=canvasRef.current; if(!canvas) return
+    const rect=canvas.getBoundingClientRect()
+    const clamp=(v:number)=>Math.max(0,Math.min(100,v))
+    function onMove(ev:MouseEvent){ setRulerY(clamp(((ev.clientY-rect.top)/rect.height)*100)) }
+    function onUp(ev:MouseEvent){
+      window.removeEventListener('mousemove',onMove)
+      window.removeEventListener('mouseup',onUp)
+      setRulerY(clamp(((ev.clientY-rect.top)/rect.height)*100))
+    }
+    window.addEventListener('mousemove',onMove)
+    window.addEventListener('mouseup',onUp)
+  }
+
   function handleContextMenu(e:React.MouseEvent<HTMLDivElement>){
     e.preventDefault()
     e.stopPropagation()
@@ -844,7 +882,7 @@ function PdfViewer({pdfBytes,zoom,page,onPageCount,onPageSize,annotations,active
   const checkDefs:{[k:string]:{color:string}}=Object.fromEntries(CHECKS.map(c=>[c.id,{color:c.color}]))
 
   return(
-    <div className="relative inline-block" style={{cursor:highlightMode?'crosshair':activeMark?'crosshair':'default'}}
+    <div className="relative inline-block" style={{cursor:highlightMode||rulerMode?'crosshair':activeMark?'crosshair':'default'}}
       onClick={handleClick}
       onMouseDown={startDrawHighlight}
       onContextMenu={handleContextMenu}
@@ -865,6 +903,28 @@ function PdfViewer({pdfBytes,zoom,page,onPageCount,onPageSize,annotations,active
       {drawRect&&(
         <div className="absolute" style={{left:`${drawRect.x}%`,top:`${drawRect.y}%`,width:`${drawRect.w}%`,height:`${drawRect.h}%`,backgroundColor:'rgba(255,255,0,0.5)',mixBlendMode:'multiply',border:'1px dashed #C9A227',zIndex:6,pointerEvents:'none'}}/>
       )}
+      {rulerY!==null&&(
+        <div
+          onMouseDown={startDragRuler}
+          onClick={e=>e.stopPropagation()}
+          title="Drag to move ruler · Right-click to dismiss"
+          onContextMenu={e=>{e.preventDefault();e.stopPropagation();setRulerMode(false);setRulerY(null)}}
+          style={{
+            position:'absolute',left:0,right:0,
+            top:`${rulerY}%`,height:28,
+            transform:'translateY(-50%)',
+            zIndex:15,cursor:'ns-resize',pointerEvents:'auto',userSelect:'none',
+            backgroundImage:[
+              'repeating-linear-gradient(90deg,rgba(110,65,0,0.6) 0,rgba(110,65,0,0.6) 1.5px,transparent 1.5px,transparent 50px)',
+              'repeating-linear-gradient(90deg,rgba(110,65,0,0.25) 0,rgba(110,65,0,0.25) 1px,transparent 1px,transparent 10px)',
+              'linear-gradient(to bottom,rgba(255,240,60,0.95) 0%,rgba(248,218,22,0.95) 45%,rgba(228,192,10,0.95) 100%)',
+            ].join(','),
+            borderTop:'1.5px solid rgba(155,105,0,0.7)',
+            borderBottom:'1.5px solid rgba(155,105,0,0.7)',
+            boxShadow:'0 3px 12px rgba(0,0,0,0.22),inset 0 1px 0 rgba(255,255,200,0.5)',
+          }}
+        />
+      )}
       {ctxMenu&&(
         <div className="fixed z-50 rounded overflow-hidden" style={{left:ctxMenu.x,top:ctxMenu.y,backgroundColor:'#FEFCF7',border:`1px solid ${C.rule}`,boxShadow:'0 4px 16px rgba(26,22,18,0.15)',minWidth:180}}
           onClick={e=>e.stopPropagation()}
@@ -872,9 +932,14 @@ function PdfViewer({pdfBytes,zoom,page,onPageCount,onPageSize,annotations,active
           onMouseLeave={()=>setCtxMenu(null)}
         >
           <button className="w-full text-left px-3 py-2 sans" style={{fontSize:12,color:C.ink,backgroundColor:highlightMode?C.ochre+'22':'transparent'}}
-            onClick={()=>{setHighlightMode(m=>!m);setCtxMenu(null)}}
+            onClick={()=>{setHighlightMode(m=>{const next=!m;if(next)setRulerMode(false);return next});setCtxMenu(null)}}
           >
             {highlightMode?'✓ Highlighter (click to disable)':'Highlighter tool'}
+          </button>
+          <button className="w-full text-left px-3 py-2 sans" style={{fontSize:12,color:C.ink,backgroundColor:rulerMode?C.ochre+'22':'transparent'}}
+            onClick={()=>{setRulerMode(m=>{const next=!m;if(!next)setRulerY(null);if(next)setHighlightMode(false);return next});setCtxMenu(null)}}
+          >
+            {rulerMode?'✓ Ruler (click to disable)':'Ruler tool'}
           </button>
         </div>
       )}
@@ -1086,7 +1151,7 @@ function MoveToDrawerModal({files,clients,rootPath,onClose,onMove}:MoveToDrawerP
 
 // ── Scan Destination Modal ────────────────────────────────────────────────────
 
-function ScanDestModal({clients,rootPath,onClose,onStarted,onFailed}:{clients:string[];rootPath:string;onClose:()=>void;onStarted:()=>void;onFailed:()=>void}){
+function ScanDestModal({clients,rootPath,defaultClient,defaultFolderPath,onClose,onStarted,onFailed}:{clients:string[];rootPath:string;defaultClient?:string|null;defaultFolderPath?:string|null;onClose:()=>void;onStarted:()=>void;onFailed:()=>void}){
   const [search,setSearch]           = useState('')
   const [targetClient,setTargetClient] = useState<string|null>(null)
   const [folderTree,setFolderTree]   = useState<(DocFile|DocFolder)[]>([])
@@ -1109,6 +1174,7 @@ function ScanDestModal({clients,rootPath,onClose,onStarted,onFailed}:{clients:st
     api?.getConfig('scanColorMode').then(v=>{ if(v==='color'||v==='bw'||v==='grayscale') setColorMode(v) })
     api?.getConfig('scanSkipBlank').then(v=>{ if(typeof v==='boolean') setSkipBlank(v) })
     api?.getConfig('scanNameButtons').then(v=>{ if(Array.isArray(v)) setNameButtons(v as BmBtn[]) })
+    if(defaultClient) setTargetClient(defaultClient)
   },[])
 
   function saveNameButtons(btns:BmBtn[]){ setNameButtons(btns); api?.setConfig('scanNameButtons',btns) }
@@ -1134,7 +1200,7 @@ function ScanDestModal({clients,rootPath,onClose,onStarted,onFailed}:{clients:st
     const cp=rootPath.replace(/\\$/,'')+`\\${targetClient}`
     api.listFolder(cp).then(tree=>{
       setFolderTree(tree)
-      setDestFolder(cp)
+      setDestFolder(defaultFolderPath&&defaultFolderPath.startsWith(cp)?defaultFolderPath:cp)
       setLoading(false)
       // auto-expand top-level folders and load their children eagerly
       const topFolders=tree.filter((n):n is DocFolder=>n.type==='folder')
@@ -1401,6 +1467,7 @@ export default function App(){
   const [loadedFolderPaths,setLoadedFolderPaths] = useState<Set<string>>(new Set())
   const [selectedFile,setSelectedFile]     = useState<DocFile|null>(null)
   const [pdfBytes,setPdfBytes]             = useState<ArrayBuffer|null>(null)
+  const [imageUrl,setImageUrl]             = useState<string|null>(null)
   const [annotations,setAnnotations]       = useState<Annotations>({tickmarks:[],signoffs:[]})
   const [pageCount,setPageCount]           = useState(1)
   const [currentPage,setCurrentPage]       = useState(1)
@@ -1599,10 +1666,25 @@ export default function App(){
       return
     }
     setNoteText(null); setNoteLoaded(false)
+    if(isImageFile(selectedFile.name)){ setPdfBytes(null); return }
     if(!isPdfFile(selectedFile.name)){ setPdfBytes(null); return }
     api.readPdf(selectedFile.path).then(setPdfBytes)
     api.getAnnotations(selectedFile.path).then(setAnnotations)
   },[selectedFile])
+
+  // Load image as blob URL when an image file is selected
+  useEffect(()=>{
+    if(!selectedFile||!isImageFile(selectedFile.name)||!api){setImageUrl(null);return}
+    let url:string|null=null
+    api.readPdf(selectedFile.path).then(bytes=>{
+      if(!bytes) return
+      const ext=fileExt(selectedFile.name)
+      const mime=ext==='png'?'image/png':ext==='gif'?'image/gif':'image/jpeg'
+      url=URL.createObjectURL(new Blob([bytes],{type:mime}))
+      setImageUrl(url)
+    })
+    return()=>{ if(url) URL.revokeObjectURL(url); setImageUrl(null) }
+  },[selectedFile?.path])
 
   // Keep refreshDocsRef current so scan/event listeners always call the latest version
   useEffect(()=>{ refreshDocsRef.current=refreshDocs },[refreshDocs])
@@ -2475,6 +2557,13 @@ export default function App(){
                       onChange={e=>handleNoteChange(e.target.value)}
                     />
                   </div>
+                ):selectedFile&&isImageFile(selectedFile.name)?(
+                  <div className="mx-auto p-4" style={{width:'fit-content',maxWidth:'100%'}}>
+                    {imageUrl
+                      ?<img src={imageUrl} alt={selectedFile.name} style={{maxWidth:'100%',display:'block',borderRadius:2,boxShadow:'0 4px 24px rgba(26,22,18,0.3)'}}/>
+                      :<div style={{color:C.inkFaint,fontSize:12,fontFamily:'Georgia,serif'}}>Loading…</div>
+                    }
+                  </div>
                 ):selectedFile&&!isPdfFile(selectedFile.name)?(
                   <div className="mx-auto flex flex-col items-center justify-center" style={{minHeight:'60vh',maxWidth:420,textAlign:'center',gap:14,paddingTop:'12vh'}}>
                     {isExcelFile(selectedFile.name)
@@ -2873,7 +2962,7 @@ export default function App(){
 
       {/* ── Scan destination modal ── */}
       {showScanModal&&(
-        <ScanDestModal clients={clients} rootPath={rootPath} onClose={()=>setShowScanModal(false)} onStarted={()=>setScanning(true)} onFailed={()=>setScanning(false)}/>
+        <ScanDestModal clients={clients} rootPath={rootPath} defaultClient={selectedClient} defaultFolderPath={activeFolder?.path??null} onClose={()=>setShowScanModal(false)} onStarted={()=>setScanning(true)} onFailed={()=>setScanning(false)}/>
       )}
 
       {/* ── Scan settings modal ── */}
