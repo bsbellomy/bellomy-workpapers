@@ -545,7 +545,8 @@ function EditFolderModal({folder,docTree,onClose,onSaved}:{folder:DocFolder;docT
       } else {
         for(let i=0;i<selected.length;i++){
           setProgress(10+Math.round(i/selected.length*85))
-          const newName=(renames[selected[i].path]||selected[i].name.replace(/\.[^.]+$/,''))+'.pdf'
+          const origExt=selected[i].name.match(/\.[^.]+$/)?.[0]??''
+          const newName=(renames[selected[i].path]||selected[i].name.replace(/\.[^.]+$/,''))+origExt
           if(newName!==selected[i].name){
             const r=await api.renameFile(selected[i].path,newName)
             if(!r.ok) throw new Error(r.error)
