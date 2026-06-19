@@ -1784,12 +1784,27 @@ export default function App(){
 
   // Register scan event listeners (once on mount) — use ref so closure always has latest refreshDocs
   useEffect(()=>{
-    api?.onScanFile(({name})=>{
+    api?.onScanFile(({name,destFolder})=>{
       setScanning(false); setScanPage(0)
       const id=crypto.randomUUID()
       setScanToasts(prev=>[...prev,{id,name}])
       setTimeout(()=>setScanToasts(prev=>prev.filter(t=>t.id!==id)),5000)
       refreshDocsRef.current(300)
+      const scannedPath=destFolder.replace(/[\\/]$/,'')+`\\${name}`
+      setTimeout(()=>{
+        setDocTree(prev=>{
+          function findFile(nodes:(DocFile|DocFolder)[]): DocFile|null {
+            for(const n of nodes){
+              if(n.type==='file'&&n.path===scannedPath) return n
+              if(n.type==='folder'){const f=findFile(n.children);if(f) return f}
+            }
+            return null
+          }
+          const f=findFile(prev)
+          if(f) setSelectedFile(f)
+          return prev
+        })
+      },600)
     })
     api?.onScanError(err=>{ setScanning(false); setScanPage(0); alert('Scan error: '+err) })
     api?.onScanProgress(({page})=>setScanPage(page))

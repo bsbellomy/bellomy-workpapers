@@ -324,7 +324,7 @@ ipcMain.handle('fs:startScan', (_e, destFolder: string, useNativeUI: boolean, dp
             const dest = path.join(destFolder, result.name)
             fs.copyFileSync(src, dest)
             try { fs.unlinkSync(src) } catch {}
-            mainWin?.webContents.send('scan:fileArrived', { name: result.name })
+            mainWin?.webContents.send('scan:fileArrived', { name: result.name, destFolder })
             resolve({ ok: true })
           } catch (copyErr: unknown) {
             resolve({ ok: false, error: `Scan succeeded but could not save to destination: ${String(copyErr)}` })
