@@ -135,8 +135,20 @@ function annFile(pdfPath: string): string {
 function loadAnnotations(pdfPath: string) {
   try {
     const f = annFile(pdfPath)
-    if (!fs.existsSync(f)) return { tickmarks: [], signoffs: [] }
-    return JSON.parse(fs.readFileSync(f, 'utf8'))
+    if (fs.existsSync(f)) {
+      const data = JSON.parse(fs.readFileSync(f, 'utf8'))
+      if (!data.addedAt) {
+        try { data.addedAt = fs.statSync(pdfPath).birthtime.toISOString() } catch {}
+        if (data.addedBy === undefined) data.addedBy = null
+        try { fs.writeFileSync(f, JSON.stringify(data, null, 2), 'utf8') } catch {}
+      }
+      return data
+    }
+    let addedAt: string | undefined
+    try { addedAt = fs.statSync(pdfPath).birthtime.toISOString() } catch {}
+    const fresh = { tickmarks: [], signoffs: [], addedAt, addedBy: null }
+    try { fs.writeFileSync(f, JSON.stringify(fresh, null, 2), 'utf8') } catch {}
+    return fresh
   } catch { return { tickmarks: [], signoffs: [] } }
 }
 

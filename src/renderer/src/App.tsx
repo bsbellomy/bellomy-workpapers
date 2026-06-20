@@ -13,7 +13,7 @@ interface Tickmark  { id:string; page:number; x:number; y:number; type:string; n
 interface Signoff   { page:number; role:string; author:string; signedAt:string }
 interface TapeStamp { id:string; page:number; x:number; y:number; entries:{value:number}[]; author:string; createdAt:string }
 interface Highlight { id:string; page:number; x:number; y:number; w:number; h:number; author:string; createdAt:string }
-interface Annotations { tickmarks:Tickmark[]; signoffs:Signoff[]; tapeStamps?:TapeStamp[]; highlights?:Highlight[] }
+interface Annotations { tickmarks:Tickmark[]; signoffs:Signoff[]; tapeStamps?:TapeStamp[]; highlights?:Highlight[]; addedAt?:string; addedBy?:string|null }
 interface DocFile  { name:string; type:'file';   path:string; annotations:Annotations }
 interface DocFolder{ name:string; type:'folder'; path:string; children:(DocFile|DocFolder)[] }
 interface Bookmark { title:string; page:number|null; items:Bookmark[] }
@@ -23,6 +23,12 @@ function isPdfFile(name:string):boolean { return fileExt(name)==='pdf' }
 function isWordFile(name:string):boolean { return fileExt(name)==='doc'||fileExt(name)==='docx' }
 function isExcelFile(name:string):boolean { return fileExt(name)==='xls'||fileExt(name)==='xlsx' }
 function isImageFile(name:string):boolean { const e=fileExt(name); return ['jpg','jpeg','png','gif','bmp','webp'].includes(e) }
+function initials(name:string):string {
+  const parts=name.trim().split(/\s+/).filter(Boolean)
+  if(parts.length===0) return ''
+  if(parts.length===1) return parts[0].slice(0,2).toUpperCase()
+  return (parts[0][0]+parts[parts.length-1][0]).toUpperCase()
+}
 
 // Not a secret — just the default Worker endpoint, pre-filled in Settings. The upload secret
 // itself can't be hardcoded here since this repo is public.
@@ -728,6 +734,7 @@ interface PdfViewerProps {
   onPageSize?:(w:number,h:number)=>void
   annotations:Annotations; activeMark:string
   onAddTickmark:(t:Omit<Tickmark,'id'|'author'|'createdAt'>)=>void
+  onMoveTickmark:(id:string,x:number,y:number)=>void
   onAddTapeStamp:(s:Omit<TapeStamp,'id'|'author'|'createdAt'>)=>void
   onDeleteTapeStamp:(id:string)=>void
   onMoveTapeStamp:(id:string,x:number,y:number)=>void
@@ -736,8 +743,9 @@ interface PdfViewerProps {
   author:string
 }
 
-function PdfViewer({pdfBytes,zoom,page,onPageCount,onPageSize,annotations,activeMark,onAddTickmark,onAddTapeStamp,onDeleteTapeStamp,onMoveTapeStamp,onAddHighlight,onDeleteHighlight,author}:PdfViewerProps){
+function PdfViewer({pdfBytes,zoom,page,onPageCount,onPageSize,annotations,activeMark,onAddTickmark,onMoveTickmark,onAddTapeStamp,onDeleteTapeStamp,onMoveTapeStamp,onAddHighlight,onDeleteHighlight,author}:PdfViewerProps){
   const [dragStamp,setDragStamp]=useState<{id:string;x:number;y:number}|null>(null)
+  const [dragTick,setDragTick]=useState<{id:string;x:number;y:number}|null>(null)
   const [highlightMode,setHighlightMode]=useState(false)
   const [drawRect,setDrawRect]=useState<{x:number;y:number;w:number;h:number}|null>(null)
   const [ctxMenu,setCtxMenu]=useState<{x:number;y:number}|null>(null)
@@ -809,6 +817,27 @@ function PdfViewer({pdfBytes,zoom,page,onPageCount,onPageSize,annotations,active
       const p=posFrom(ev)
       onMoveTapeStamp(stamp.id,p.x,p.y)
       setDragStamp(null)
+    }
+    window.addEventListener('mousemove',onMove)
+    window.addEventListener('mouseup',onUp)
+  }
+
+  function startDragTick(e:React.MouseEvent,tm:Tickmark){
+    e.stopPropagation()
+    e.preventDefault()
+    const canvas=canvasRef.current; if(!canvas) return
+    const rect=canvas.getBoundingClientRect()
+    const clamp=(v:number)=>Math.max(0,Math.min(100,v))
+    function posFrom(ev:MouseEvent){
+      return {x:clamp(((ev.clientX-rect.left)/rect.width)*100), y:clamp(((ev.clientY-rect.top)/rect.height)*100)}
+    }
+    function onMove(ev:MouseEvent){ setDragTick({id:tm.id,...posFrom(ev)}) }
+    function onUp(ev:MouseEvent){
+      window.removeEventListener('mousemove',onMove)
+      window.removeEventListener('mouseup',onUp)
+      const p=posFrom(ev)
+      onMoveTickmark(tm.id,p.x,p.y)
+      setDragTick(null)
     }
     window.addEventListener('mousemove',onMove)
     window.addEventListener('mouseup',onUp)
@@ -954,10 +983,15 @@ function PdfViewer({pdfBytes,zoom,page,onPageCount,onPageSize,annotations,active
       )}
       {pageAnns.map(tm=>{
         const def=checkDefs[tm.type]??{color:C.ochre}
+        const pos=dragTick&&dragTick.id===tm.id?dragTick:tm
         return(
-          <div key={tm.id} className="absolute" style={{left:`${tm.x}%`,top:`${tm.y}%`,transform:'translate(-50%,-50%)',pointerEvents:'none',zIndex:10}}>
-            <div style={{backgroundColor:def.color,color:'white',fontSize:9,fontWeight:700,padding:'2px 5px',borderRadius:2,boxShadow:`0 2px 4px rgba(26,22,18,0.15),0 0 0 1.5px ${def.color},0 0 0 2.5px ${C.paperLight}`,fontFamily:'JetBrains Mono,monospace'}}>
-              ✓ {tm.note}
+          <div key={tm.id} className="absolute" style={{left:`${pos.x}%`,top:`${pos.y}%`,transform:'translate(-50%,-50%)',zIndex:10,cursor:'move',pointerEvents:'auto'}}
+            title={`${tm.author} · ${new Date(tm.createdAt).toLocaleDateString()}`}
+            onMouseDown={e=>startDragTick(e,tm)}
+            onClick={e=>e.stopPropagation()}
+          >
+            <div style={{backgroundColor:def.color,color:'white',fontSize:11,fontWeight:700,width:18,height:18,borderRadius:'50%',display:'flex',alignItems:'center',justifyContent:'center',boxShadow:`0 2px 4px rgba(26,22,18,0.15),0 0 0 1.5px ${def.color},0 0 0 2.5px ${C.paperLight}`}}>
+              ✓
             </div>
           </div>
         )
@@ -1464,6 +1498,33 @@ function ScanSettingsModal({onClose}:{onClose:()=>void}){
   )
 }
 
+// ── User Name Prompt Modal ────────────────────────────────────────────────────
+
+function UserNameModal({initialValue,onSave}:{initialValue:string;onSave:(name:string)=>void}){
+  const [value,setValue]=useState(initialValue)
+  return(
+    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{backgroundColor:'rgba(26,22,18,0.55)'}}>
+      <div className="flex flex-col rounded overflow-hidden" style={{width:380,backgroundColor:C.paperLight,boxShadow:'0 8px 40px rgba(26,22,18,0.3)',border:`1px solid ${C.rule}`}}>
+        <div className="px-5 py-3" style={{backgroundColor:C.ink,color:C.paperLight}}>
+          <span className="serif" style={{fontSize:14,fontWeight:600}}>Who's working in this app?</span>
+        </div>
+        <div className="p-5 flex flex-col gap-3">
+          <div style={{fontSize:12,color:C.inkMuted,lineHeight:1.5}}>
+            Enter your name so tickmarks, signoffs, and added files can be attributed to you. We recommend <strong>First Last</strong> (e.g. "Billy Bellomy").
+          </div>
+          <input autoFocus value={value} onChange={e=>setValue(e.target.value)}
+            onKeyDown={e=>{if(e.key==='Enter'&&value.trim()) onSave(value)}}
+            placeholder="First Last"
+            className="w-full px-3 py-2 rounded sans" style={{fontSize:14,border:`1px solid ${C.rule}`,backgroundColor:C.paper}}/>
+        </div>
+        <div className="px-5 py-3 flex justify-end" style={{borderTop:`1px solid ${C.rule}`,backgroundColor:C.paperDeep}}>
+          <button onClick={()=>value.trim()&&onSave(value)} disabled={!value.trim()} className="px-4 py-1.5 rounded sans" style={{fontSize:12,backgroundColor:C.ochre,color:'#fff',fontWeight:600,opacity:value.trim()?1:0.5}}>Continue</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Magic Link Settings Modal ─────────────────────────────────────────────────
 
 function MagicLinkSettingsModal({onClose}:{onClose:()=>void}){
@@ -1696,7 +1757,23 @@ export default function App(){
   const [tapeEntries,setTapeEntries] = useState<{id:string;value:number}[]>([])
   const [tapeInput,setTapeInput]     = useState('')
   const tapeInputRef = useRef<HTMLInputElement|null>(null)
-  const author='BC'
+  const [author,setAuthorState]=useState('')
+  const [showNamePrompt,setShowNamePrompt]=useState(false)
+  useEffect(()=>{
+    api?.getConfig('userName').then(v=>{
+      if(typeof v==='string'&&v.trim()) setAuthorState(v.trim())
+      else setShowNamePrompt(true)
+    })
+  },[])
+  function saveUserName(name:string){
+    const trimmed=name.trim()
+    if(!trimmed) return
+    setAuthorState(trimmed)
+    api?.setConfig('userName',trimmed)
+    setShowNamePrompt(false)
+  }
+  const authorRef=useRef('')
+  useEffect(()=>{authorRef.current=author},[author])
 
   // Refs to avoid stale closures inside refreshDocs
   const expandedFoldersRef = useRef<Set<string>>(new Set())
@@ -1861,6 +1938,14 @@ export default function App(){
     })
   },[selectedFile])
 
+  const moveTickmark=useCallback((id:string,x:number,y:number)=>{
+    setAnnotations(prev=>{
+      const next={...prev,tickmarks:prev.tickmarks.map(t=>t.id===id?{...t,x,y}:t)}
+      if(api&&selectedFile) api.saveAnnotations(selectedFile.path,next)
+      return next
+    })
+  },[selectedFile])
+
   const deleteSignoff=useCallback((page:number,role:string)=>{
     setAnnotations(prev=>{
       const next={...prev,signoffs:prev.signoffs.filter(s=>!(s.page===page&&s.role===role))}
@@ -1948,7 +2033,13 @@ export default function App(){
             return null
           }
           const f=findFile(prev)
-          if(f) setSelectedFile(f)
+          if(f){
+            setSelectedFile(f)
+            api?.getAnnotations(f.path).then(ann=>{
+              const next={...ann,addedAt:new Date().toISOString(),addedBy:authorRef.current||null}
+              api?.saveAnnotations(f.path,next)
+            })
+          }
           return prev
         })
       },600)
@@ -2503,7 +2594,7 @@ export default function App(){
           </div>
           <div style={{height:14,width:1,backgroundColor:C.inkSoft}}/>
           <button onClick={pickFolder} style={{color:C.inkFaint}} title="Change root folder"><Settings size={11}/></button>
-          <div style={{width:18,height:18,backgroundColor:C.ochre,borderRadius:'50%',display:'flex',alignItems:'center',justifyContent:'center',fontSize:9,fontWeight:700,color:C.ink}}>{author}</div>
+          <div onClick={()=>setShowNamePrompt(true)} title={`${author} (click to change)`} style={{width:18,height:18,backgroundColor:C.ochre,borderRadius:'50%',display:'flex',alignItems:'center',justifyContent:'center',fontSize:9,fontWeight:700,color:C.ink,cursor:'pointer'}}>{initials(author)}</div>
           <div style={{width:1,height:14,backgroundColor:C.inkSoft}}/>
           <button onClick={()=>api?.minimizeWindow()} title="Minimize" style={{width:22,height:22,display:'flex',alignItems:'center',justifyContent:'center',borderRadius:3,color:C.inkFaint}} className="row-hover">─</button>
           <button onClick={()=>api?.maximizeWindow()} title="Maximize" style={{width:22,height:22,display:'flex',alignItems:'center',justifyContent:'center',borderRadius:3,color:C.inkFaint}} className="row-hover">□</button>
@@ -2801,7 +2892,7 @@ export default function App(){
                   </div>
                 ):(
                   <div className="mx-auto doc-shadow" style={{width:'fit-content'}}>
-                    <PdfViewer pdfBytes={pdfBytes} zoom={zoom} page={currentPage} onPageCount={setPageCount} onPageSize={(w,h)=>setPageSize({w,h})} annotations={annotations} activeMark={activeMark} onAddTickmark={addTickmark} onAddTapeStamp={addTapeStamp} onDeleteTapeStamp={deleteTapeStamp} onMoveTapeStamp={moveTapeStamp} onAddHighlight={addHighlight} onDeleteHighlight={deleteHighlight} author={author}/>
+                    <PdfViewer pdfBytes={pdfBytes} zoom={zoom} page={currentPage} onPageCount={setPageCount} onPageSize={(w,h)=>setPageSize({w,h})} annotations={annotations} activeMark={activeMark} onAddTickmark={addTickmark} onMoveTickmark={moveTickmark} onAddTapeStamp={addTapeStamp} onDeleteTapeStamp={deleteTapeStamp} onMoveTapeStamp={moveTapeStamp} onAddHighlight={addHighlight} onDeleteHighlight={deleteHighlight} author={author}/>
                   </div>
                 )}
               </div>
@@ -3028,6 +3119,14 @@ export default function App(){
               </div>
             </div>
             <div className="flex items-center gap-3" style={{fontSize:9}}>
+              {selectedFile&&annotations.addedAt&&(
+                <>
+                  <span className="mono" style={{color:C.inkFaint}}>
+                    Added {new Date(annotations.addedAt).toLocaleDateString()} by <span style={{color:C.ochreLight}}>{annotations.addedBy||'Unknown'}</span>
+                  </span>
+                  <span style={{color:C.inkFaint}}>·</span>
+                </>
+              )}
               {selectedClient&&<span className="mono" style={{color:C.inkFaint}}><span style={{color:C.ochreLight}}>TaxDome</span> {selectedClient}</span>}
             </div>
           </div>
@@ -3184,6 +3283,10 @@ export default function App(){
       {/* ── Scan settings modal ── */}
       {showScanSettings&&(
         <ScanSettingsModal onClose={()=>setShowScanSettings(false)}/>
+      )}
+
+      {showNamePrompt&&(
+        <UserNameModal initialValue={author} onSave={saveUserName}/>
       )}
 
       {showMagicLinkSettings&&(
