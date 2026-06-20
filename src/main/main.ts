@@ -75,17 +75,21 @@ function writeSecret(key: string, value: string) {
 ipcMain.handle('fs:setSecret', (_e, key: string, value: string) => {
   try { writeSecret(key, value); return true } catch { return false }
 })
+// Not a secret — just the default Worker endpoint. The upload secret itself is never hardcoded
+// since this repo is public; it must be entered once in Settings and is stored encrypted.
+const DEFAULT_WORKER_URL = 'https://bellomy-magic-links.billybellomy29.workers.dev'
+
 ipcMain.handle('fs:getMagicLinkConfig', () => {
   const s = readSecrets()
-  return { workerUrl: s.workerUrl ?? '', hasUploadSecret: !!s.uploadSecret }
+  return { workerUrl: s.workerUrl || DEFAULT_WORKER_URL, hasUploadSecret: !!s.uploadSecret }
 })
 
 // ── Magic links: upload file(s) to the Cloudflare Worker, get back single-view links ──
 ipcMain.handle('fs:sendMagicLinks', async (_e, items: { name: string; path?: string; bytes?: ArrayBuffer }[], expiresDays: number) => {
   const secrets = readSecrets()
-  const workerUrl = (secrets.workerUrl ?? '').replace(/\/$/, '')
+  const workerUrl = (secrets.workerUrl || DEFAULT_WORKER_URL).replace(/\/$/, '')
   const uploadSecret = secrets.uploadSecret ?? ''
-  if (!workerUrl || !uploadSecret) return { ok: false, error: 'Magic link is not configured. Set the Worker URL and upload secret in Settings.' }
+  if (!workerUrl || !uploadSecret) return { ok: false, error: 'Magic link is not configured. Set the upload secret in Settings.' }
   const results: { name: string; url?: string; error?: string }[] = []
   for (const item of items) {
     try {

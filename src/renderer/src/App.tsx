@@ -24,6 +24,10 @@ function isWordFile(name:string):boolean { return fileExt(name)==='doc'||fileExt
 function isExcelFile(name:string):boolean { return fileExt(name)==='xls'||fileExt(name)==='xlsx' }
 function isImageFile(name:string):boolean { const e=fileExt(name); return ['jpg','jpeg','png','gif','bmp','webp'].includes(e) }
 
+// Not a secret — just the default Worker endpoint, pre-filled in Settings. The upload secret
+// itself can't be hardcoded here since this repo is public.
+const DEFAULT_WORKER_URL='https://bellomy-magic-links.billybellomy29.workers.dev'
+
 const api = (window as unknown as { electronAPI?: {
   listClients:    (p:string)=>Promise<string[]>
   listDocs:       (p:string)=>Promise<(DocFile|DocFolder)[]>
@@ -1470,7 +1474,7 @@ function MagicLinkSettingsModal({onClose}:{onClose:()=>void}){
   const [saved,setSaved]           = useState(false)
 
   useEffect(()=>{
-    api?.getMagicLinkConfig().then(c=>{ setWorkerUrl(c.workerUrl); setHasSecret(c.hasUploadSecret) })
+    api?.getMagicLinkConfig().then(c=>{ setWorkerUrl(c.workerUrl||DEFAULT_WORKER_URL); setHasSecret(c.hasUploadSecret) })
   },[])
 
   async function handleSave(){
