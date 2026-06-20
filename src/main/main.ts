@@ -77,7 +77,7 @@ ipcMain.handle('fs:setSecret', (_e, key: string, value: string) => {
 })
 // Not a secret — just the default Worker endpoint. The upload secret itself is never hardcoded
 // since this repo is public; it must be entered once in Settings and is stored encrypted.
-const DEFAULT_WORKER_URL = 'https://bellomy-magic-links.billybellomy29.workers.dev'
+const DEFAULT_WORKER_URL = 'https://share.bellomycpa.com'
 
 ipcMain.handle('fs:getMagicLinkConfig', () => {
   const s = readSecrets()

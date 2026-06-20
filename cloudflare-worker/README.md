@@ -38,10 +38,15 @@ are not used by this design; you can keep them or revoke them.)
    cd cloudflare-worker
    wrangler deploy
    ```
-   This prints your Worker URL, e.g. `https://bellomy-magic-links.<your-subdomain>.workers.dev`.
+   This prints your Worker URL. If `bellomycpa.com` is already on this
+   Cloudflare account, `wrangler.toml` attaches a custom domain
+   (`share.bellomycpa.com`) automatically instead of the default
+   `*.workers.dev` URL — much friendlier for clients to click.
 
 6. In the Bellomy Workpapers app, open Settings → Magic Links and enter:
-   - **Worker URL** — the URL from step 5
+   - **Worker URL** — `https://share.bellomycpa.com` (this is also the
+     app's built-in default, so you only need to set this if you deploy
+     to a different domain)
    - **Upload secret** — the value you set in step 4
 
 ## How it works

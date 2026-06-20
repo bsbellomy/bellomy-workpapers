@@ -8,7 +8,11 @@ bucket_name = "bellomy-magic-links"
 
 [[kv_namespaces]]
 binding = "LINKS_KV"
-id = "PASTE_YOUR_KV_NAMESPACE_ID_HERE"
+id = "8184c23c34c940048874202c63be1a59"
+
+[[routes]]
+pattern = "share.bellomycpa.com"
+custom_domain = true
 
 # Set the upload secret with:
 #   wrangler secret put UPLOAD_SECRET

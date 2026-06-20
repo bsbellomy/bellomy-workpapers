@@ -32,7 +32,7 @@ function initials(name:string):string {
 
 // Not a secret — just the default Worker endpoint, pre-filled in Settings. The upload secret
 // itself can't be hardcoded here since this repo is public.
-const DEFAULT_WORKER_URL='https://bellomy-magic-links.billybellomy29.workers.dev'
+const DEFAULT_WORKER_URL='https://share.bellomycpa.com'
 
 const api = (window as unknown as { electronAPI?: {
   listClients:    (p:string)=>Promise<string[]>
