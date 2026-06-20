@@ -1,0 +1,15 @@
+name = "bellomy-magic-links"
+main = "worker.js"
+compatibility_date = "2024-09-01"
+
+[[r2_buckets]]
+binding = "MAGIC_LINKS_BUCKET"
+bucket_name = "bellomy-magic-links"
+
+[[kv_namespaces]]
+binding = "LINKS_KV"
+id = "PASTE_YOUR_KV_NAMESPACE_ID_HERE"
+
+# Set the upload secret with:
+#   wrangler secret put UPLOAD_SECRET
+# Do NOT put it here in plaintext.

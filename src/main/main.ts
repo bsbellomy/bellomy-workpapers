@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, shell, safeStorage } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { spawn } from 'child_process'
 import path from 'path'
@@ -51,6 +51,66 @@ ipcMain.handle('fs:setConfig', (_e, key: string, value: unknown) => {
   try { const c=readConfig(); c[key]=value; fs.writeFileSync(configPath(), JSON.stringify(c,null,2),'utf8'); return true }
   catch { return false }
 })
+
+// ── Encrypted secrets (magic link Worker URL + upload secret) ────────────────
+function secretsPath() { return path.join(app.getPath('userData'), 'bellomy-secrets.json') }
+function readSecretsRaw(): Record<string, string> {
+  try { if (fs.existsSync(secretsPath())) return JSON.parse(fs.readFileSync(secretsPath(), 'utf8')) } catch {}
+  return {}
+}
+function readSecrets(): Record<string, string> {
+  const raw = readSecretsRaw()
+  const out: Record<string, string> = {}
+  for (const k of Object.keys(raw)) {
+    try { out[k] = safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(Buffer.from(raw[k], 'base64')) : raw[k] }
+    catch { out[k] = '' }
+  }
+  return out
+}
+function writeSecret(key: string, value: string) {
+  const raw = readSecretsRaw()
+  raw[key] = safeStorage.isEncryptionAvailable() ? safeStorage.encryptString(value).toString('base64') : value
+  fs.writeFileSync(secretsPath(), JSON.stringify(raw, null, 2), 'utf8')
+}
+ipcMain.handle('fs:setSecret', (_e, key: string, value: string) => {
+  try { writeSecret(key, value); return true } catch { return false }
+})
+ipcMain.handle('fs:getMagicLinkConfig', () => {
+  const s = readSecrets()
+  return { workerUrl: s.workerUrl ?? '', hasUploadSecret: !!s.uploadSecret }
+})
+
+// ── Magic links: upload file(s) to the Cloudflare Worker, get back single-view links ──
+ipcMain.handle('fs:sendMagicLinks', async (_e, items: { name: string; path?: string; bytes?: ArrayBuffer }[], expiresDays: number) => {
+  const secrets = readSecrets()
+  const workerUrl = (secrets.workerUrl ?? '').replace(/\/$/, '')
+  const uploadSecret = secrets.uploadSecret ?? ''
+  if (!workerUrl || !uploadSecret) return { ok: false, error: 'Magic link is not configured. Set the Worker URL and upload secret in Settings.' }
+  const results: { name: string; url?: string; error?: string }[] = []
+  for (const item of items) {
+    try {
+      const data: Buffer = item.bytes ? Buffer.from(item.bytes) : fs.readFileSync(item.path!)
+      const resp = await fetch(`${workerUrl}/upload`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${uploadSecret}`,
+          'X-File-Name': encodeURIComponent(item.name),
+          'X-Expires-Days': String(expiresDays),
+          'Content-Type': 'application/octet-stream',
+        },
+        body: new Uint8Array(data),
+      })
+      if (!resp.ok) { results.push({ name: item.name, error: `Upload failed (HTTP ${resp.status})` }); continue }
+      const json = await resp.json() as { url: string }
+      results.push({ name: item.name, url: json.url })
+    } catch (err: unknown) {
+      results.push({ name: item.name, error: String(err) })
+    }
+  }
+  return { ok: true, results }
+})
+
+ipcMain.handle('fs:openExternal', (_e, url: string) => { shell.openExternal(url); return true })
 
 // Annotations: Z:\[Client]\Private\[subfolder__filename].json
 function privateDir(pdfPath: string): string {

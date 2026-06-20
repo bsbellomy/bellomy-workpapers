@@ -4,7 +4,7 @@ import {
   ChevronRight, ChevronDown, FileSignature, ZoomIn, ZoomOut, Maximize2,
   MessageSquare, PanelRightClose, PanelRightOpen, PanelLeftClose, PanelLeftOpen,
   Clock, Layers, Settings, ScanLine, ArrowLeft, Merge, Printer,
-  RefreshCw, Trash2, Calculator, FileSpreadsheet, StickyNote, Copy, CreditCard, RotateCw,
+  RefreshCw, Trash2, Calculator, FileSpreadsheet, StickyNote, Copy, CreditCard, RotateCw, Mail,
 } from 'lucide-react'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -39,7 +39,7 @@ const api = (window as unknown as { electronAPI?: {
   listFolder:      (p:string)=>Promise<(DocFile|DocFolder)[]>
   listScanDevices: ()=>Promise<{ok:boolean;devices:{ID:string;Name:string}[];error?:string}>
   stopScanWatcher: ()=>Promise<void>
-  onScanFile:      (cb:(data:{name:string})=>void)=>void
+  onScanFile:      (cb:(data:{name:string;destFolder:string})=>void)=>void
   onScanError:     (cb:(err:string)=>void)=>void
   onScanProgress:  (cb:(data:{page:number})=>void)=>void
   pickFolder:     ()=>Promise<string|null>
@@ -57,6 +57,10 @@ const api = (window as unknown as { electronAPI?: {
   findTaxForms:   (clientPath:string)=>Promise<{ok:boolean;error?:string;results?:{path:string;name:string;year:string|null}[]}>
   getConfig:      (k:string)=>Promise<unknown>
   setConfig:      (k:string,v:unknown)=>Promise<boolean>
+  setSecret:      (k:string,v:string)=>Promise<boolean>
+  getMagicLinkConfig: ()=>Promise<{workerUrl:string;hasUploadSecret:boolean}>
+  sendMagicLinks: (items:{name:string;path?:string;bytes?:ArrayBuffer}[],expiresDays:number)=>Promise<{ok:boolean;error?:string;results?:{name:string;url?:string;error?:string}[]}>
+  openExternal:   (url:string)=>Promise<boolean>
   printFile:      (p:string)=>Promise<{ok:boolean;error?:string}>
   printBytes:     (b:ArrayBuffer)=>Promise<{ok:boolean;error?:string}>
   minimizeWindow: ()=>void
@@ -1456,6 +1460,145 @@ function ScanSettingsModal({onClose}:{onClose:()=>void}){
   )
 }
 
+// ── Magic Link Settings Modal ─────────────────────────────────────────────────
+
+function MagicLinkSettingsModal({onClose}:{onClose:()=>void}){
+  const [workerUrl,setWorkerUrl]   = useState('')
+  const [uploadSecret,setUploadSecret] = useState('')
+  const [hasSecret,setHasSecret]   = useState(false)
+  const [saving,setSaving]         = useState(false)
+  const [saved,setSaved]           = useState(false)
+
+  useEffect(()=>{
+    api?.getMagicLinkConfig().then(c=>{ setWorkerUrl(c.workerUrl); setHasSecret(c.hasUploadSecret) })
+  },[])
+
+  async function handleSave(){
+    setSaving(true)
+    await api?.setSecret('workerUrl',workerUrl.trim())
+    if(uploadSecret.trim()) await api?.setSecret('uploadSecret',uploadSecret.trim())
+    setSaving(false); setSaved(true)
+    setTimeout(()=>setSaved(false),2000)
+  }
+
+  return(
+    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{backgroundColor:'rgba(26,22,18,0.4)'}} onClick={onClose}>
+      <div className="flex flex-col rounded overflow-hidden" style={{width:460,backgroundColor:C.paperLight,boxShadow:'0 8px 40px rgba(26,22,18,0.25)',border:`1px solid ${C.rule}`}} onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3" style={{backgroundColor:C.ink,color:C.paperLight}}>
+          <span className="serif" style={{fontSize:14,fontWeight:600}}>Magic Link Settings</span>
+          <button onClick={onClose} style={{color:C.inkFaint,fontSize:20,lineHeight:1}}>×</button>
+        </div>
+        <div className="p-5 flex flex-col gap-4">
+          <div>
+            <label className="sans" style={{fontSize:11,color:C.inkMuted,fontWeight:600,textTransform:'uppercase',letterSpacing:0.5}}>Worker URL</label>
+            <input value={workerUrl} onChange={e=>setWorkerUrl(e.target.value)} placeholder="https://bellomy-magic-links.yoursubdomain.workers.dev"
+              className="w-full mt-1 px-3 py-2 rounded sans" style={{fontSize:13,border:`1px solid ${C.rule}`,backgroundColor:C.paper}}/>
+          </div>
+          <div>
+            <label className="sans" style={{fontSize:11,color:C.inkMuted,fontWeight:600,textTransform:'uppercase',letterSpacing:0.5}}>
+              Upload Secret {hasSecret&&<span style={{color:C.ochreDeep}}>(already set — leave blank to keep it)</span>}
+            </label>
+            <input type="password" value={uploadSecret} onChange={e=>setUploadSecret(e.target.value)} placeholder={hasSecret?'••••••••':'paste the secret from wrangler secret put'}
+              className="w-full mt-1 px-3 py-2 rounded sans" style={{fontSize:13,border:`1px solid ${C.rule}`,backgroundColor:C.paper}}/>
+          </div>
+          <div style={{fontSize:11,color:C.inkFaint,lineHeight:1.5}}>
+            These values come from deploying the Cloudflare Worker (see <span className="mono">cloudflare-worker/README.md</span>). Links sent through this app are single-view and self-delete after the chosen expiration.
+          </div>
+        </div>
+        <div className="px-5 py-3 flex justify-end gap-2" style={{borderTop:`1px solid ${C.rule}`,backgroundColor:C.paperDeep}}>
+          {saved&&<span className="sans" style={{fontSize:12,color:C.ochreDeep,alignSelf:'center'}}>Saved ✓</span>}
+          <button onClick={onClose} className="px-4 py-1.5 rounded sans" style={{fontSize:12,border:`1px solid ${C.rule}`,color:C.inkSoft,backgroundColor:C.paper}}>Close</button>
+          <button onClick={handleSave} disabled={saving} className="px-4 py-1.5 rounded sans" style={{fontSize:12,backgroundColor:C.ochre,color:'#fff',fontWeight:600}}>{saving?'Saving…':'Save'}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Email Magic Link Modal ────────────────────────────────────────────────────
+
+interface EmailItem { name:string; path?:string; bytes?:ArrayBuffer }
+
+function EmailLinkModal({initialItems,siblingFiles,onClose}:{initialItems:EmailItem[];siblingFiles:DocFile[];onClose:()=>void}){
+  const [selected,setSelected] = useState<Set<string>>(new Set(initialItems.map(i=>i.name)))
+  const [expiresDays,setExpiresDays] = useState(7)
+  const [sending,setSending]   = useState(false)
+  const [error,setError]       = useState<string|null>(null)
+
+  const extraSiblings=siblingFiles.filter(f=>!initialItems.some(i=>i.name===f.name))
+  const allItems:EmailItem[]=[...initialItems,...extraSiblings.map(f=>({name:f.name,path:f.path}))]
+
+  async function handleSend(){
+    setSending(true); setError(null)
+    const items=allItems.filter(i=>selected.has(i.name))
+    if(items.length===0){ setError('Select at least one file.'); setSending(false); return }
+    const r=await api?.sendMagicLinks(items,expiresDays)
+    setSending(false)
+    if(!r?.ok){ setError(r?.error??'Could not send magic links.'); return }
+    const failed=(r.results??[]).filter(x=>!x.url)
+    if(failed.length){ setError(`Some files failed to upload: ${failed.map(f=>f.name).join(', ')}`); }
+    const links=(r.results??[]).filter(x=>x.url)
+    if(links.length===0) return
+    const expiresLabel=expiresDays===1?'1 day':`${expiresDays} days`
+    const body=[
+      `Hello,`,
+      ``,
+      `Please find your document${links.length>1?'s':''} below. ${links.length>1?'These links':'This link'} will expire in ${expiresLabel} and can only be opened once, so please save a copy after viewing.`,
+      ``,
+      ...links.map(l=>`${l.name}: ${l.url}`),
+      ``,
+      `Thank you,`,
+    ].join('\n')
+    const subject=links.length===1?`Document: ${links[0].name}`:'Your documents'
+    const mailto=`mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
+    await api?.openExternal(mailto)
+    onClose()
+  }
+
+  return(
+    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{backgroundColor:'rgba(26,22,18,0.4)'}} onClick={onClose}>
+      <div className="flex flex-col rounded overflow-hidden" style={{width:460,maxHeight:'80vh',backgroundColor:C.paperLight,boxShadow:'0 8px 40px rgba(26,22,18,0.25)',border:`1px solid ${C.rule}`}} onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3" style={{backgroundColor:C.ink,color:C.paperLight}}>
+          <span className="serif" style={{fontSize:14,fontWeight:600}}>Email Magic Link</span>
+          <button onClick={onClose} style={{color:C.inkFaint,fontSize:20,lineHeight:1}}>×</button>
+        </div>
+        <div className="p-5 flex flex-col gap-3 overflow-y-auto">
+          <div className="sans" style={{fontSize:11,color:C.inkMuted,fontWeight:600,textTransform:'uppercase',letterSpacing:0.5}}>Files to send</div>
+          <div className="flex flex-col gap-1" style={{maxHeight:220,overflowY:'auto'}}>
+            {allItems.map(item=>(
+              <label key={item.name} className="flex items-center gap-2 px-2 py-1.5 rounded" style={{backgroundColor:C.paperDeep,cursor:'pointer'}}>
+                <input type="checkbox" checked={selected.has(item.name)} onChange={()=>setSelected(prev=>{
+                  const next=new Set(prev)
+                  if(next.has(item.name)) next.delete(item.name); else next.add(item.name)
+                  return next
+                })}/>
+                <span className="sans truncate" style={{fontSize:13,color:C.ink}}>{item.name}</span>
+              </label>
+            ))}
+          </div>
+          <div>
+            <label className="sans" style={{fontSize:11,color:C.inkMuted,fontWeight:600,textTransform:'uppercase',letterSpacing:0.5}}>Link expires after</label>
+            <select value={expiresDays} onChange={e=>setExpiresDays(Number(e.target.value))}
+              className="w-full mt-1 px-3 py-2 rounded sans" style={{fontSize:13,border:`1px solid ${C.rule}`,backgroundColor:C.paper}}>
+              <option value={1}>1 day</option>
+              <option value={3}>3 days</option>
+              <option value={7}>7 days</option>
+              <option value={14}>14 days</option>
+              <option value={30}>30 days</option>
+            </select>
+          </div>
+          <div style={{fontSize:11,color:C.inkFaint}}>Links can only be opened once and self-delete after that or after expiry.</div>
+          {error&&<div style={{fontSize:12,color:'#B5443A'}}>{error}</div>}
+        </div>
+        <div className="px-5 py-3 flex justify-end gap-2" style={{borderTop:`1px solid ${C.rule}`,backgroundColor:C.paperDeep}}>
+          <button onClick={onClose} className="px-4 py-1.5 rounded sans" style={{fontSize:12,border:`1px solid ${C.rule}`,color:C.inkSoft,backgroundColor:C.paper}}>Cancel</button>
+          <button onClick={handleSend} disabled={sending} className="px-4 py-1.5 rounded sans" style={{fontSize:12,backgroundColor:C.ochre,color:'#fff',fontWeight:600}}>{sending?'Sending…':'Send'}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 
 export default function App(){
@@ -1971,6 +2114,31 @@ export default function App(){
       const r=await api.printBytes(buf)
       if(!r.ok) alert('Print failed: '+(r.error??''))
     }catch(e){alert('Print failed: '+String(e))}
+  }
+
+  const [showMagicLinkSettings,setShowMagicLinkSettings]=useState(false)
+  const [emailModal,setEmailModal]=useState<{items:EmailItem[];siblings:DocFile[]}|null>(null)
+
+  async function emailCurrentFile(){
+    if(!selectedFile) return
+    setEmailModal({items:[{name:selectedFile.name,path:selectedFile.path}],siblings:[]})
+  }
+
+  async function emailCurrentPage(){
+    if(!api||!selectedFile||!pdfBytes) return
+    try{
+      const {PDFDocument}=await import('pdf-lib')
+      const fresh=await api.readPdf(selectedFile.path)
+      if(!fresh) return
+      const src=await PDFDocument.load(fresh)
+      const doc=await PDFDocument.create()
+      const [pg]=await doc.copyPages(src,[currentPage-1])
+      doc.addPage(pg)
+      const saved=await doc.save({useObjectStreams:false})
+      const buf=saved.buffer.slice(saved.byteOffset,saved.byteOffset+saved.byteLength) as ArrayBuffer
+      const name=selectedFile.name.replace(/\.[^.]+$/,'')+`_p${currentPage}.pdf`
+      setEmailModal({items:[{name,bytes:buf}],siblings:[]})
+    }catch(e){ alert('Could not prepare page for email: '+String(e)) }
   }
 
   const [rotating,setRotating]=useState(false)
@@ -2527,6 +2695,21 @@ export default function App(){
 
             <div style={{width:1,height:18,backgroundColor:C.rule,margin:'0 4px'}}/>
 
+            {/* Email current file (magic link) */}
+            <button className="tool-btn" onClick={emailCurrentFile} disabled={!selectedFile} title="Email this file (magic link)" style={{color:C.inkSoft,padding:'5px 8px'}}>
+              <Mail size={14} style={{color:selectedFile?C.ochre:'#bbb'}}/>
+            </button>
+            {/* Email current page only */}
+            <button className="tool-btn" onClick={emailCurrentPage} disabled={!selectedFile||!pdfBytes} title="Email current page only (magic link)" style={{color:C.inkSoft,padding:'5px 8px',position:'relative'}}>
+              <Mail size={14} style={{color:selectedFile?C.ochre:'#bbb'}}/>
+              <span style={{position:'absolute',top:3,right:3,fontSize:8,fontWeight:700,color:C.ochreDeep,lineHeight:1,backgroundColor:C.ochreSoft,borderRadius:2,padding:'0 1px'}}>1</span>
+            </button>
+            <button className="tool-btn" onClick={()=>setShowMagicLinkSettings(true)} title="Magic link settings" style={{color:C.inkFaint,padding:'5px 6px'}}>
+              <Settings size={12}/>
+            </button>
+
+            <div style={{width:1,height:18,backgroundColor:C.rule,margin:'0 4px'}}/>
+
             {/* Combine with file above */}
             <button
               className="tool-btn sans"
@@ -2902,6 +3085,9 @@ export default function App(){
             <button className="w-full text-left px-4 py-2.5 sans row-hover flex items-center gap-2" style={{fontSize:13,color:C.ink,borderTop:`1px solid ${C.ruleSoft}`}} onClick={()=>{setMoveDrawer(affectedFiles);setCtxMenu(null)}}>
               📁 <span>{isBulk?`Move ${affectedFiles.length} files to Another Drawer`:'Move to Another Drawer'}</span>
             </button>
+            <button className="w-full text-left px-4 py-2.5 sans row-hover flex items-center gap-2" style={{fontSize:13,color:C.ink,borderTop:`1px solid ${C.ruleSoft}`}} onClick={()=>{setEmailModal({items:affectedFiles.map(f=>({name:f.name,path:f.path})),siblings:[]});setCtxMenu(null)}}>
+              ✉️ <span>{isBulk?`Email ${affectedFiles.length} Files…`:'Email File…'}</span>
+            </button>
             {!isBulk&&(
               <button className="w-full text-left px-4 py-2.5 sans row-hover flex items-center gap-2" style={{fontSize:13,color:'#B5443A',borderTop:`1px solid ${C.ruleSoft}`}}
                 onClick={()=>{
@@ -2994,6 +3180,14 @@ export default function App(){
       {/* ── Scan settings modal ── */}
       {showScanSettings&&(
         <ScanSettingsModal onClose={()=>setShowScanSettings(false)}/>
+      )}
+
+      {showMagicLinkSettings&&(
+        <MagicLinkSettingsModal onClose={()=>setShowMagicLinkSettings(false)}/>
+      )}
+
+      {emailModal&&(
+        <EmailLinkModal initialItems={emailModal.items} siblingFiles={emailModal.siblings} onClose={()=>setEmailModal(null)}/>
       )}
 
       {/* ── Hoist freeze overlay ── */}
