@@ -28,13 +28,22 @@ export default {
   },
 }
 
+// Short, URL-friendly random id — still enough entropy for a single-view link
+// with a short lifespan (62^12 possibilities), but much less ugly than a UUID.
+function shortId(len = 12) {
+  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+  const bytes = new Uint8Array(len)
+  crypto.getRandomValues(bytes)
+  return Array.from(bytes, b => chars[b % chars.length]).join('')
+}
+
 async function handleUpload(request, env) {
   const auth = request.headers.get('Authorization')
   if (auth !== `Bearer ${env.UPLOAD_SECRET}`) return new Response('Unauthorized', { status: 401 })
 
   const fileName = decodeURIComponent(request.headers.get('X-File-Name') || 'document')
   const expiresDays = parseFloat(request.headers.get('X-Expires-Days') || '7')
-  const token = crypto.randomUUID().replace(/-/g, '')
+  const token = shortId()
   const body = await request.arrayBuffer()
 
   await env.MAGIC_LINKS_BUCKET.put(token, body)

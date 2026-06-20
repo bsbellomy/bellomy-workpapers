@@ -1584,7 +1584,7 @@ function MagicLinkSettingsModal({onClose}:{onClose:()=>void}){
 
 interface EmailItem { name:string; path?:string; bytes?:ArrayBuffer }
 
-function EmailLinkModal({initialItems,siblingFiles,onClose}:{initialItems:EmailItem[];siblingFiles:DocFile[];onClose:()=>void}){
+function EmailLinkModal({initialItems,siblingFiles,author,onClose}:{initialItems:EmailItem[];siblingFiles:DocFile[];author:string;onClose:()=>void}){
   const [selected,setSelected] = useState<Set<string>>(new Set(initialItems.map(i=>i.name)))
   const [expiresDays,setExpiresDays] = useState(7)
   const [sending,setSending]   = useState(false)
@@ -1614,7 +1614,7 @@ function EmailLinkModal({initialItems,siblingFiles,onClose}:{initialItems:EmailI
       ``,
       `Thank you,`,
     ].join('\n')
-    const subject=links.length===1?`Document: ${links[0].name}`:'Your documents'
+    const subject=`${author} has shared a file with you`
     const mailto=`mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
     await api?.openExternal(mailto)
     onClose()
@@ -3294,7 +3294,7 @@ export default function App(){
       )}
 
       {emailModal&&(
-        <EmailLinkModal initialItems={emailModal.items} siblingFiles={emailModal.siblings} onClose={()=>setEmailModal(null)}/>
+        <EmailLinkModal initialItems={emailModal.items} siblingFiles={emailModal.siblings} author={author} onClose={()=>setEmailModal(null)}/>
       )}
 
       {/* ── Hoist freeze overlay ── */}
