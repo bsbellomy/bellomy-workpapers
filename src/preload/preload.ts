@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   hoistFolder:     (p:string) => ipcRenderer.invoke('fs:hoistFolder', p),
   unhoistFolder:   (p:string, originalFolder:string) => ipcRenderer.invoke('fs:unhoistFolder', p, originalFolder),
   openFile:        (p:string) => ipcRenderer.invoke('fs:openFile', p),
+  createFolder:    (parentPath:string, name:string) => ipcRenderer.invoke('fs:createFolder', parentPath, name),
   createNotesFile: (p:string) => ipcRenderer.invoke('fs:createNotesFile', p),
   readTextFile:    (p:string) => ipcRenderer.invoke('fs:readTextFile', p),
   writeTextFile:   (p:string, content:string) => ipcRenderer.invoke('fs:writeTextFile', p, content),

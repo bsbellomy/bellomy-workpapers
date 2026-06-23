@@ -544,6 +544,18 @@ ipcMain.handle('fs:openFile', async (_e, filePath: string) => {
   }
 })
 
+// ── Create a subfolder ────────────────────────────────────────────────────────
+ipcMain.handle('fs:createFolder', async (_e, parentPath: string, name: string) => {
+  try {
+    const clean = name.trim()
+    if (!clean) return { ok: false, error: 'Folder name cannot be empty.' }
+    const dest = path.join(parentPath, clean)
+    if (fs.existsSync(dest)) return { ok: false, error: 'A folder with that name already exists.' }
+    fs.mkdirSync(dest, { recursive: true })
+    return { ok: true, path: dest }
+  } catch (err: unknown) { return { ok: false, error: String(err) } }
+})
+
 // ── Create a Notes text file in a folder (named "<year> Notes.txt" or "Notes.txt") ──
 ipcMain.handle('fs:createNotesFile', async (_e, folderPath: string) => {
   try {

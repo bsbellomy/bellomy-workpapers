@@ -23,6 +23,7 @@ function isPdfFile(name:string):boolean { return fileExt(name)==='pdf' }
 function isWordFile(name:string):boolean { return fileExt(name)==='doc'||fileExt(name)==='docx' }
 function isExcelFile(name:string):boolean { return fileExt(name)==='xls'||fileExt(name)==='xlsx' }
 function isImageFile(name:string):boolean { const e=fileExt(name); return ['jpg','jpeg','png','gif','bmp','webp'].includes(e) }
+function needsExternalApp(name:string):boolean { return !isPdfFile(name)&&!isImageFile(name)&&fileExt(name)!=='txt' }
 function initials(name:string):string {
   const parts=name.trim().split(/\s+/).filter(Boolean)
   if(parts.length===0) return ''
@@ -60,6 +61,7 @@ const api = (window as unknown as { electronAPI?: {
   hoistFolder:    (p:string)=>Promise<{ok:boolean;error?:string;path?:string}>
   unhoistFolder:  (p:string,originalFolder:string)=>Promise<{ok:boolean;error?:string}>
   openFile:       (p:string)=>Promise<{ok:boolean;error?:string}>
+  createFolder:   (parentPath:string,name:string)=>Promise<{ok:boolean;error?:string;path?:string}>
   createNotesFile:(p:string)=>Promise<{ok:boolean;error?:string;path?:string;openError?:string}>
   readTextFile:   (p:string)=>Promise<{ok:boolean;error?:string;content?:string}>
   writeTextFile:  (p:string,content:string)=>Promise<{ok:boolean;error?:string}>
@@ -1694,6 +1696,14 @@ export default function App(){
   const [dragOver,setDragOver]             = useState<string|null>(null)
   const [ctxMenu,setCtxMenu]               = useState<{x:number;y:number;file:DocFile}|null>(null)
   const [ctxFolder,setCtxFolder]           = useState<{x:number;y:number;folder:DocFolder;hoistOnly?:boolean}|null>(null)
+  const [newSubfolder,setNewSubfolder]     = useState<{parent:DocFolder;value:string}|null>(null)
+  async function handleCreateSubfolder(){
+    if(!api||!newSubfolder) return
+    const r=await api.createFolder(newSubfolder.parent.path,newSubfolder.value)
+    if(!r.ok){ alert('Could not create folder: '+(r.error??'Unknown error')); return }
+    setNewSubfolder(null)
+    refreshDocs(300)
+  }
   const [renaming,setRenaming]             = useState<{file:DocFile;value:string}|null>(null)
   const [hoisted,setHoisted]               = useState<{folder:string;path:string}|null>(null)
   const [hoisting,setHoisting]             = useState(false)
@@ -2490,15 +2500,15 @@ export default function App(){
             onClick={e=>{
               if(e.ctrlKey||e.metaKey){
                 setMultiSelect(prev=>prev.some(f=>f.path===node.path)?prev.filter(f=>f.path!==node.path):[...prev,node])
-              } else { setMultiSelect([]); setSelectedFile(node) }
+              } else {
+                setMultiSelect([]); setSelectedFile(node)
+                if(needsExternalApp(node.name)) api?.openFile(node.path)
+              }
             }}
             onContextMenu={e=>{
               e.preventDefault();e.stopPropagation()
               if(!multiSelect.some(f=>f.path===node.path)) setMultiSelect([])
               setCtxMenu({x:e.clientX,y:e.clientY,file:node})
-            }}
-            onDoubleClick={()=>{
-              if(!isPdfFile(node.name)&&fileExt(node.name)!=='txt') api?.openFile(node.path)
             }}
           >
             {/* Bookmark expand button */}
@@ -2877,7 +2887,7 @@ export default function App(){
                       :<StickyNote size={48} style={{color:'#B8870A'}}/>}
                     <div className="serif" style={{fontSize:15,fontWeight:600,color:C.ink}}>{selectedFile.name}</div>
                     <div className="sans" style={{fontSize:12,color:C.inkMuted}}>
-                      {isExcelFile(selectedFile.name)?'Excel':isWordFile(selectedFile.name)?'Word':'This'} files open in your default program for that file type. Double-click the file in the list, or use the button below.
+                      {isExcelFile(selectedFile.name)?'Excel':isWordFile(selectedFile.name)?'Word':'This'} file should have opened in your default program automatically. If it didn't, click below.
                     </div>
                     <button
                       className="px-4 py-1.5 rounded sans"
@@ -3163,6 +3173,33 @@ export default function App(){
         </div>
       )}
 
+      {/* ── New subfolder modal ── */}
+      {newSubfolder&&(
+        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{backgroundColor:'rgba(26,22,18,0.4)'}} onClick={()=>setNewSubfolder(null)}>
+          <div className="rounded overflow-hidden" style={{width:420,backgroundColor:C.paperLight,border:`1px solid ${C.rule}`,boxShadow:'0 8px 32px rgba(26,22,18,0.25)'}} onClick={e=>e.stopPropagation()}>
+            <div className="px-4 py-3 flex-shrink-0" style={{backgroundColor:C.ink,color:C.paperLight}}>
+              <div className="serif" style={{fontSize:13,fontWeight:600}}>New Subfolder</div>
+              <div className="mono truncate" style={{fontSize:10,color:C.inkFaint,marginTop:2}}>in {newSubfolder.parent.name}</div>
+            </div>
+            <div className="p-4">
+              <div className="sans" style={{fontSize:11,color:C.inkMuted,marginBottom:8}}>Folder name:</div>
+              <input
+                autoFocus
+                className="w-full outline-none sans"
+                style={{fontSize:14,color:C.ink,backgroundColor:C.paper,border:`1px solid ${C.ochre}`,borderRadius:4,padding:'7px 10px',width:'100%',boxSizing:'border-box'}}
+                value={newSubfolder.value}
+                onChange={e=>setNewSubfolder({...newSubfolder,value:e.target.value})}
+                onKeyDown={e=>{if(e.key==='Enter')handleCreateSubfolder();if(e.key==='Escape')setNewSubfolder(null)}}
+              />
+            </div>
+            <div className="flex justify-end gap-2 px-4 py-3" style={{borderTop:`1px solid ${C.rule}`,backgroundColor:C.paperDeep}}>
+              <button onClick={()=>setNewSubfolder(null)} className="px-4 py-1.5 rounded sans" style={{fontSize:12,border:`1px solid ${C.rule}`,color:C.inkSoft,backgroundColor:C.paper}}>Cancel</button>
+              <button onClick={handleCreateSubfolder} disabled={!newSubfolder.value.trim()} className="px-4 py-1.5 rounded sans" style={{fontSize:12,fontWeight:600,backgroundColor:C.ink,color:C.paperLight,opacity:newSubfolder.value.trim()?1:0.5}}>Create</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Context menu ── */}
       {ctxMenu&&(()=>{
         // Files affected: multiselect if >1, else just the right-clicked file
@@ -3218,6 +3255,12 @@ export default function App(){
             <button className="w-full text-left px-4 py-2.5 sans row-hover flex items-center gap-2" style={{fontSize:13,color:C.ink}}
               onClick={()=>{setEditFolderModal(ctxFolder.folder);setCtxFolder(null)}}>
               🗂️ <span>Edit Folder…</span>
+            </button>
+          )}
+          {!ctxFolder.hoistOnly&&(
+            <button className="w-full text-left px-4 py-2.5 sans row-hover flex items-center gap-2" style={{fontSize:13,color:C.ink,borderTop:`1px solid ${C.ruleSoft}`}}
+              onClick={()=>{setNewSubfolder({parent:ctxFolder.folder,value:''});setCtxFolder(null)}}>
+              ➕ <span>New Subfolder…</span>
             </button>
           )}
           <button className="w-full text-left px-4 py-2.5 sans row-hover flex items-center gap-2" style={{fontSize:13,color:C.ink,borderTop:ctxFolder.hoistOnly?'none':`1px solid ${C.ruleSoft}`}}
