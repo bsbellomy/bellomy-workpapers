@@ -38,6 +38,40 @@ function getScanHelperPath(): string {
   return path.join(process.resourcesPath, 'scanner', 'ScanHelper.exe')
 }
 
+// Turn a raw fs error into a plain-English diagnosis of *why* a write to a
+// network/TaxDome folder likely failed, so users don't have to guess between
+// "file is open elsewhere," "no permission," and "antivirus is blocking it."
+function diagnoseWriteFailure(destFolder: string, destFile: string, err: unknown): string {
+  const base = String(err instanceof Error ? err.message : err)
+  const code = (err as { code?: string })?.code
+  if (fs.existsSync(destFile)) {
+    try { const fd = fs.openSync(destFile, 'r+'); fs.closeSync(fd) }
+    catch {
+      return `The file "${path.basename(destFile)}" already exists at the destination and appears to be open in another program. Close it and try again. (${base})`
+    }
+  }
+  try { fs.accessSync(destFolder, fs.constants.W_OK) }
+  catch {
+    return `This computer does not have write permission to "${destFolder}". This is usually a TaxDome folder-permission issue, not an app bug — check with your TaxDome admin, or try saving a test file there via File Explorer to confirm. (${base})`
+  }
+  if (code === 'EPERM') {
+    return `Windows blocked the write to "${destFolder}" (EPERM) even though the folder looks writable. This is often antivirus "Controlled Folder Access" / ransomware protection silently blocking the app. Check Windows Security > Virus & threat protection > Ransomware protection > Controlled folder access, and allow "Bellomy Workpapers" if it's on. (${base})`
+  }
+  return base
+}
+
+ipcMain.handle('fs:testWriteAccess', async (_e, folderPath: string) => {
+  try {
+    if (!fs.existsSync(folderPath)) return { ok: false, error: `Folder does not exist or is not reachable: ${folderPath}` }
+    const testFile = path.join(folderPath, `.bellomy-write-test-${Date.now()}.tmp`)
+    fs.writeFileSync(testFile, 'test')
+    fs.unlinkSync(testFile)
+    return { ok: true }
+  } catch (err: unknown) {
+    return { ok: false, error: diagnoseWriteFailure(folderPath, folderPath, err) }
+  }
+})
+
 let currentRootPath = 'Z:\\'
 
 // ── App config file ───────────────────────────────────────────────────────────
@@ -403,7 +437,8 @@ ipcMain.handle('fs:startScan', (_e, destFolder: string, useNativeUI: boolean, dp
             mainWin?.webContents.send('scan:fileArrived', { name: result.name, destFolder })
             resolve({ ok: true })
           } catch (copyErr: unknown) {
-            resolve({ ok: false, error: `Scan succeeded but could not save to destination: ${String(copyErr)}` })
+            const dest = path.join(destFolder, result.name)
+            resolve({ ok: false, error: `Scan succeeded but could not save to destination: ${diagnoseWriteFailure(destFolder, dest, copyErr)}` })
           }
         } else {
           resolve({ ok: false, error: result?.error ?? 'Scan failed' })

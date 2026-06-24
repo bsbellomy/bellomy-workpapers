@@ -62,6 +62,7 @@ const api = (window as unknown as { electronAPI?: {
   unhoistFolder:  (p:string,originalFolder:string)=>Promise<{ok:boolean;error?:string}>
   openFile:       (p:string)=>Promise<{ok:boolean;error?:string}>
   createFolder:   (parentPath:string,name:string)=>Promise<{ok:boolean;error?:string;path?:string}>
+  testWriteAccess:(folderPath:string)=>Promise<{ok:boolean;error?:string}>
   createNotesFile:(p:string)=>Promise<{ok:boolean;error?:string;path?:string;openError?:string}>
   readTextFile:   (p:string)=>Promise<{ok:boolean;error?:string;content?:string}>
   writeTextFile:  (p:string,content:string)=>Promise<{ok:boolean;error?:string}>
@@ -3275,6 +3276,16 @@ export default function App(){
               else alert('Could not hoist folder: '+(r?.error??'Unknown error'))
             }}>
             📦 <span>Hoist…</span>
+          </button>
+          <button className="w-full text-left px-4 py-2.5 sans row-hover flex items-center gap-2" style={{fontSize:13,color:C.ink,borderTop:`1px solid ${C.ruleSoft}`}}
+            onClick={async()=>{
+              const folder=ctxFolder.folder
+              setCtxFolder(null)
+              const r=await api?.testWriteAccess(folder.path)
+              if(r?.ok) alert(`✓ This computer can write to:\n${folder.path}`)
+              else alert(`✗ Cannot write to:\n${folder.path}\n\n${r?.error??'Unknown error'}`)
+            }}>
+            🔧 <span>Test Folder Access</span>
           </button>
         </div>
       )}
