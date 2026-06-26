@@ -48,7 +48,7 @@ const api = (window as unknown as { electronAPI?: {
   getScanInbox:   ()=>Promise<string>
   startScan:       (destFolder:string,useNativeUI:boolean,dpi?:number,colorMode?:string,scanName?:string,skipBlank?:boolean)=>Promise<{ok:boolean;error?:string}>
   listFolder:      (p:string)=>Promise<(DocFile|DocFolder)[]>
-  listScanDevices: ()=>Promise<{ok:boolean;devices:{ID:string;Name:string}[];error?:string}>
+  listScanDevices: ()=>Promise<{ok:boolean;devices:{ID:string;Name:string;driver?:string}[];error?:string}>
   stopScanWatcher: ()=>Promise<void>
   onScanFile:      (cb:(data:{name:string;destFolder:string})=>void)=>void
   onScanError:     (cb:(err:string)=>void)=>void
@@ -1451,7 +1451,7 @@ function ScanDestModal({clients,rootPath,defaultClient,defaultFolderPath,onClose
 // ── Scan Settings Modal ───────────────────────────────────────────────────────
 
 function ScanSettingsModal({onClose}:{onClose:()=>void}){
-  const [devices,setDevices]   = useState<{ID:string;Name:string}[]>([])
+  const [devices,setDevices]   = useState<{ID:string;Name:string;driver?:string}[]>([])
   const [loading,setLoading]   = useState(true)
   const [error,setError]       = useState<string|null>(null)
 
@@ -1481,12 +1481,13 @@ function ScanSettingsModal({onClose}:{onClose:()=>void}){
           {loading&&<div style={{fontSize:12,color:C.inkFaint,padding:'8px 0'}}>Scanning for devices…</div>}
           {!loading&&error&&<div style={{fontSize:12,color:'#B5443A',padding:'8px 0'}}>{error}</div>}
           {!loading&&!error&&devices.length===0&&(
-            <div style={{fontSize:12,color:C.inkFaint,padding:'8px 0'}}>No TWAIN devices found. Make sure your scanner is connected and its driver is installed.</div>
+            <div style={{fontSize:12,color:C.inkFaint,padding:'8px 0'}}>No devices found (checked TWAIN and WIA). Make sure your scanner is connected and its driver is installed.</div>
           )}
           {!loading&&devices.map(d=>(
             <div key={d.ID} className="flex items-center gap-2 px-3 py-2 rounded" style={{backgroundColor:C.paperDeep,border:`1px solid ${C.ruleSoft}`}}>
               <ScanLine size={13} style={{color:C.ochre,flexShrink:0}}/>
               <span className="sans flex-1" style={{fontSize:13,color:C.ink}}>{d.Name}</span>
+              {d.driver&&<span className="mono" style={{fontSize:9,padding:'1px 5px',borderRadius:3,border:`1px solid ${C.rule}`,color:C.inkMuted,textTransform:'uppercase'}}>{d.driver}</span>}
             </div>
           ))}
           <div style={{fontSize:11,color:C.inkFaint,lineHeight:1.5,borderTop:`1px solid ${C.ruleSoft}`,paddingTop:12}}>

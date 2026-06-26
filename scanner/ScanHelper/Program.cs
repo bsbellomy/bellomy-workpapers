@@ -38,9 +38,27 @@ class Program
 
     static async Task<int> ListDevices(ScanController controller, string[] args)
     {
-        var driver = ParseDriver(args);
-        var devices = await controller.GetDeviceList(driver);
-        var list = devices.Select(d => new { d.ID, d.Name }).ToList();
+        // If a driver was explicitly requested, only query that one. Otherwise check
+        // both TWAIN and WIA — many scanners (especially modern all-in-ones) only
+        // have a WIA driver installed and never show up under TWAIN, even though
+        // they appear fine in Windows' own "Printers & scanners" page.
+        var explicitDriver = GetFlag(args, "--driver");
+        var driversToTry = explicitDriver != null
+            ? new[] { ParseDriver(args) }
+            : new[] { Driver.Twain, Driver.Wia };
+
+        var found = new List<(ScanDevice Device, Driver Driver)>();
+        foreach (var driver in driversToTry)
+        {
+            try
+            {
+                var devices = await controller.GetDeviceList(driver);
+                foreach (var d in devices) found.Add((d, driver));
+            }
+            catch { /* this driver may not be available on this machine; ignore and try the next */ }
+        }
+
+        var list = found.Select(f => new { f.Device.ID, f.Device.Name, driver = f.Driver.ToString().ToLower() }).ToList();
         Console.WriteLine(Json(new { ok = true, devices = list }));
         return 0;
     }
@@ -52,11 +70,12 @@ class Program
         if (args.Length < 2)
             return Error("Usage: scan <dest-folder> [--device <id>] [--ui] [--driver twain|wia] [--dpi N] [--color|--grayscale|--bw]");
 
-        var destFolder  = args[1];
-        var deviceId    = GetFlag(args, "--device");
-        var useNativeUI = args.Contains("--ui");
-        var driver      = ParseDriver(args);
-        var scanName    = GetFlag(args, "--name");
+        var destFolder      = args[1];
+        var deviceId        = GetFlag(args, "--device");
+        var useNativeUI     = args.Contains("--ui");
+        var explicitDriver  = GetFlag(args, "--driver");
+        var driver          = ParseDriver(args);
+        var scanName        = GetFlag(args, "--name");
 
         // Resolution — default 200 dpi (good quality, much smaller than 300)
         var dpiStr = GetFlag(args, "--dpi");
@@ -76,23 +95,34 @@ class Program
         Directory.CreateDirectory(destFolder);
 
         // ── resolve device ────────────────────────────────────────────────────
-        var devices = await controller.GetDeviceList(driver);
-        ScanDevice? device;
+        // If no driver was explicitly requested, try TWAIN first, then fall back to
+        // WIA — many scanners (especially all-in-ones) only have a WIA driver
+        // installed, even though they show up fine in Windows' Printers & scanners.
+        var driversToTry = explicitDriver != null ? new[] { driver } : new[] { Driver.Twain, Driver.Wia };
 
-        if (deviceId != null)
+        ScanDevice? device = null;
+        var triedAny = false;
+        foreach (var candidateDriver in driversToTry)
         {
-            device = devices.FirstOrDefault(d =>
-                d.ID == deviceId ||
-                d.Name.Contains(deviceId, StringComparison.OrdinalIgnoreCase));
+            List<ScanDevice> devices;
+            try { devices = await controller.GetDeviceList(candidateDriver); }
+            catch { continue; }
+            triedAny = true;
 
-            if (device == null)
-                return Error($"Device not found: {deviceId}");
+            ScanDevice? match = deviceId != null
+                ? devices.FirstOrDefault(dev => dev.ID == deviceId || dev.Name.Contains(deviceId, StringComparison.OrdinalIgnoreCase))
+                : devices.FirstOrDefault();
+
+            if (match != null) { device = match; driver = candidateDriver; break; }
         }
-        else
+
+        if (device == null)
         {
-            device = devices.FirstOrDefault();
-            if (device == null)
-                return Error("No TWAIN scanner devices found. Make sure your scanner is connected and its driver is installed.");
+            return Error(deviceId != null
+                ? $"Device not found: {deviceId}"
+                : triedAny
+                    ? "No scanner devices found (checked TWAIN and WIA). Make sure your scanner is connected and its driver is installed."
+                    : "Could not query any scanner drivers on this machine.");
         }
 
         // ── scan ──────────────────────────────────────────────────────────────
