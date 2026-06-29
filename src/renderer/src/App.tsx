@@ -131,6 +131,7 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
   const [loadPct,setLoadPct]         = useState(0)
   const [selPage,setSelPage]         = useState(0)
   const [assignments,setAssignments] = useState<Record<number,string>>({})
+  const [customTitles,setCustomTitles] = useState<Record<number,string>>({})
   const [buttons,setButtons]         = useState<BmBtn[]>([])
   const [newLabel,setNewLabel]       = useState('')
   const [saving,setSaving]           = useState(false)
@@ -269,15 +270,27 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
 
       // ── Pass 2: load clean bytes, add outline, save final ────────────────────
       const newAssign:Record<number,string>={}
-      order.forEach((origIdx,newIdx)=>{ if(assignments[origIdx]) newAssign[newIdx]=assignments[origIdx] })
-      // Build hierarchical bookmark groups: one parent per button, children = each assigned page
+      const newCustomTitles:Record<number,string>={}
+      order.forEach((origIdx,newIdx)=>{
+        if(assignments[origIdx]) newAssign[newIdx]=assignments[origIdx]
+        if(customTitles[origIdx]!==undefined) newCustomTitles[newIdx]=customTitles[origIdx]
+      })
+      // Build bookmark groups: one parent per button (children = each grouped page),
+      // plus a standalone top-level entry for any page promoted via the "P" control.
       interface BmGroup { title:string; pages:number[] }
       const bmGroups:BmGroup[]=[]
+      for(let pg=0;pg<order.length;pg++){
+        if(newAssign[pg]&&newCustomTitles[pg]!==undefined){
+          const title=newCustomTitles[pg]||buttons.find(b=>b.id===newAssign[pg])?.label||'Bookmark'
+          bmGroups.push({title,pages:[pg]})
+        }
+      }
       for(const btn of buttons){
         const pages:number[]=[]
-        for(let pg=0;pg<order.length;pg++) if(newAssign[pg]===btn.id) pages.push(pg)
+        for(let pg=0;pg<order.length;pg++) if(newAssign[pg]===btn.id&&newCustomTitles[pg]===undefined) pages.push(pg)
         if(pages.length>0) bmGroups.push({title:btn.label,pages})
       }
+      bmGroups.sort((a,b)=>a.pages[0]-b.pages[0]) // keep TOC in document order
 
       let finalBytes=cleanBytes
       if(bmGroups.length>0){
@@ -409,10 +422,27 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
                       <span className="mono" style={{fontSize:10,color:C.inkMuted}}>Pg {i+1}</span>
                       {assignments[i]?(
                         <div className="flex items-center gap-1">
-                          <span className="sans" style={{fontSize:10,color:C.ochreDeep,backgroundColor:C.ochreLight,padding:'1px 5px',borderRadius:3,fontWeight:600}}>
-                            {buttons.find(b=>b.id===assignments[i])?.label}
+                          <span className="sans" style={{fontSize:10,color:C.ochreDeep,backgroundColor:customTitles[i]!==undefined?'#D8E8D0':C.ochreLight,padding:'1px 5px',borderRadius:3,fontWeight:600}}
+                            title={customTitles[i]!==undefined?'Promoted to its own top-level bookmark':undefined}>
+                            {customTitles[i]!==undefined?customTitles[i]||buttons.find(b=>b.id===assignments[i])?.label:buttons.find(b=>b.id===assignments[i])?.label}
                           </span>
-                          <button onClick={e=>{e.stopPropagation();setAssignments(p=>{const n={...p};delete n[i];return n})}} style={{color:C.inkFaint}}><X size={9}/></button>
+                          <button
+                            onClick={e=>{
+                              e.stopPropagation()
+                              const current=customTitles[i]??buttons.find(b=>b.id===assignments[i])?.label??''
+                              const next=window.prompt('Bookmark title for this page (clear to ungroup from the shared category bookmark):',current)
+                              if(next===null) return
+                              setCustomTitles(p=>{
+                                const n={...p}
+                                if(next.trim()==='') delete n[i]
+                                else n[i]=next.trim()
+                                return n
+                              })
+                            }}
+                            title="Promote &amp; rename as its own top-level bookmark"
+                            style={{color:customTitles[i]!==undefined?'#3D7A2E':C.inkFaint,fontWeight:700,fontSize:9,padding:'0 3px'}}
+                          >P</button>
+                          <button onClick={e=>{e.stopPropagation();setAssignments(p=>{const n={...p};delete n[i];return n});setCustomTitles(p=>{const n={...p};delete n[i];return n})}} style={{color:C.inkFaint}}><X size={9}/></button>
                         </div>
                       ):(
                         <span className="sans" style={{fontSize:10,color:selPage===i?C.ochre:C.inkFaint}}>
