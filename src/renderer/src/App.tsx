@@ -1630,14 +1630,14 @@ function MagicLinkSettingsModal({onClose}:{onClose:()=>void}){
 
 interface EmailItem { name:string; path?:string; bytes?:ArrayBuffer }
 
-function EmailLinkModal({initialItems,siblingFiles,author,onClose}:{initialItems:EmailItem[];siblingFiles:DocFile[];author:string;onClose:()=>void}){
+function EmailLinkModal({initialItems,clientFiles,author,onClose}:{initialItems:EmailItem[];clientFiles:DocFile[];author:string;onClose:()=>void}){
   const [selected,setSelected] = useState<Set<string>>(new Set(initialItems.map(i=>i.name)))
   const [expiresDays,setExpiresDays] = useState(7)
   const [sending,setSending]   = useState(false)
   const [error,setError]       = useState<string|null>(null)
 
-  const extraSiblings=siblingFiles.filter(f=>!initialItems.some(i=>i.name===f.name))
-  const allItems:EmailItem[]=[...initialItems,...extraSiblings.map(f=>({name:f.name,path:f.path}))]
+  const extraFiles=clientFiles.filter(f=>!initialItems.some(i=>i.name===f.name))
+  const allItems:EmailItem[]=[...initialItems,...extraFiles.map(f=>({name:f.name,path:f.path}))]
 
   async function handleSend(){
     setSending(true); setError(null)
@@ -2282,11 +2282,11 @@ export default function App(){
   }
 
   const [showMagicLinkSettings,setShowMagicLinkSettings]=useState(false)
-  const [emailModal,setEmailModal]=useState<{items:EmailItem[];siblings:DocFile[]}|null>(null)
+  const [emailModal,setEmailModal]=useState<{items:EmailItem[];clientFiles:DocFile[]}|null>(null)
 
   async function emailCurrentFile(){
     if(!selectedFile) return
-    setEmailModal({items:[{name:selectedFile.name,path:selectedFile.path}],siblings:findSiblingFiles(docTree,selectedFile.path)})
+    setEmailModal({items:[{name:selectedFile.name,path:selectedFile.path}],clientFiles:flatFiles(docTree)})
   }
 
   async function emailCurrentPage(){
@@ -2302,7 +2302,7 @@ export default function App(){
       const saved=await doc.save({useObjectStreams:false})
       const buf=saved.buffer.slice(saved.byteOffset,saved.byteOffset+saved.byteLength) as ArrayBuffer
       const name=selectedFile.name.replace(/\.[^.]+$/,'')+`_p${currentPage}.pdf`
-      setEmailModal({items:[{name,bytes:buf}],siblings:[]})
+      setEmailModal({items:[{name,bytes:buf}],clientFiles:flatFiles(docTree)})
     }catch(e){ alert('Could not prepare page for email: '+String(e)) }
   }
 
@@ -3285,7 +3285,7 @@ export default function App(){
             <button className="w-full text-left px-4 py-2.5 sans row-hover flex items-center gap-2" style={{fontSize:13,color:C.ink,borderTop:`1px solid ${C.ruleSoft}`}} onClick={()=>{setMoveDrawer(affectedFiles);setCtxMenu(null)}}>
               📁 <span>{isBulk?`Move ${affectedFiles.length} files to Another Drawer`:'Move to Another Drawer'}</span>
             </button>
-            <button className="w-full text-left px-4 py-2.5 sans row-hover flex items-center gap-2" style={{fontSize:13,color:C.ink,borderTop:`1px solid ${C.ruleSoft}`}} onClick={()=>{setEmailModal({items:affectedFiles.map(f=>({name:f.name,path:f.path})),siblings:findSiblingFiles(docTree,ctxMenu.file.path)});setCtxMenu(null)}}>
+            <button className="w-full text-left px-4 py-2.5 sans row-hover flex items-center gap-2" style={{fontSize:13,color:C.ink,borderTop:`1px solid ${C.ruleSoft}`}} onClick={()=>{setEmailModal({items:affectedFiles.map(f=>({name:f.name,path:f.path})),clientFiles:flatFiles(docTree)});setCtxMenu(null)}}>
               ✉️ <span>{isBulk?`Email ${affectedFiles.length} Files…`:'Email File…'}</span>
             </button>
             {!isBulk&&(
@@ -3407,7 +3407,7 @@ export default function App(){
       )}
 
       {emailModal&&(
-        <EmailLinkModal initialItems={emailModal.items} siblingFiles={emailModal.siblings} author={author} onClose={()=>setEmailModal(null)}/>
+        <EmailLinkModal initialItems={emailModal.items} clientFiles={emailModal.clientFiles} author={author} onClose={()=>setEmailModal(null)}/>
       )}
 
       {/* ── Hoist freeze overlay ── */}
