@@ -386,7 +386,7 @@ ipcMain.handle('fs:pickScanner', async () => {
 ipcMain.handle('fs:getScanInbox', () => scanInboxPath())
 
 // ── Start scan via NAPS2.Sdk helper ──────────────────────────────────────────
-ipcMain.handle('fs:startScan', (_e, destFolder: string, useNativeUI: boolean, dpi?: number, colorMode?: string, scanName?: string, skipBlank?: boolean) => {
+ipcMain.handle('fs:startScan', (_e, destFolder: string, useNativeUI: boolean, dpi?: number, colorMode?: string, scanName?: string, skipBlank?: boolean, appendToPath?: string) => {
   const helperPath = getScanHelperPath()
   if (!fs.existsSync(helperPath))
     return Promise.resolve({ ok: false, error: 'Scanner helper not found. Please reinstall the app.' })
@@ -403,6 +403,11 @@ ipcMain.handle('fs:startScan', (_e, destFolder: string, useNativeUI: boolean, dp
   // else default grayscale
   if (scanName) args.push('--name', scanName)
   if (skipBlank) args.push('--skip-blank')
+  // Once we know which driver actually found the scanner (TWAIN vs WIA), skip
+  // re-probing both on every scan — cuts a redundant device enumeration that
+  // isn't needed once the right driver is known.
+  const cachedDriver = readConfig().scanDriver
+  if (typeof cachedDriver === 'string') args.push('--driver', cachedDriver)
 
   return new Promise<{ ok: boolean; error?: string }>(resolve => {
     const child = spawn(helperPath, args)
@@ -426,11 +431,41 @@ ipcMain.handle('fs:startScan', (_e, destFolder: string, useNativeUI: boolean, dp
       if (code === 0) {
         const result = tryParse(stdout)
         if (result?.ok) {
+          if (typeof result.driver === 'string') {
+            const c = readConfig(); c.scanDriver = result.driver
+            try { fs.writeFileSync(configPath(), JSON.stringify(c, null, 2), 'utf8') } catch {}
+          }
+          const src = path.join(localInbox, result.name)
+          if (appendToPath) {
+            // Merge the newly scanned pages onto the back of an existing PDF instead
+            // of saving as a separate file.
+            ;(async () => {
+              try {
+                const { PDFDocument } = await import('pdf-lib')
+                const existingBytes = fs.readFileSync(appendToPath)
+                const newBytes = fs.readFileSync(src)
+                const merged = await PDFDocument.create()
+                const existingDoc = await PDFDocument.load(existingBytes)
+                const newDoc = await PDFDocument.load(newBytes)
+                const existingPages = await merged.copyPages(existingDoc, existingDoc.getPageIndices())
+                const newPages = await merged.copyPages(newDoc, newDoc.getPageIndices())
+                existingPages.forEach(p => merged.addPage(p))
+                newPages.forEach(p => merged.addPage(p))
+                const mergedBytes = await merged.save()
+                fs.writeFileSync(appendToPath, mergedBytes)
+                try { fs.unlinkSync(src) } catch {}
+                mainWin?.webContents.send('scan:fileArrived', { name: path.basename(appendToPath), destFolder: path.dirname(appendToPath), appended: true })
+                resolve({ ok: true })
+              } catch (mergeErr: unknown) {
+                resolve({ ok: false, error: `Scan succeeded but could not append to "${path.basename(appendToPath)}": ${String(mergeErr)}` })
+              }
+            })()
+            return
+          }
           // Copy from local inbox to the actual destination (runs in the main
           // process which has full access to the TaxDome virtual drive).
           try {
             if (!fs.existsSync(destFolder)) fs.mkdirSync(destFolder, { recursive: true })
-            const src = path.join(localInbox, result.name)
             const dest = path.join(destFolder, result.name)
             fs.copyFileSync(src, dest)
             try { fs.unlinkSync(src) } catch {}
@@ -441,11 +476,19 @@ ipcMain.handle('fs:startScan', (_e, destFolder: string, useNativeUI: boolean, dp
             resolve({ ok: false, error: `Scan succeeded but could not save to destination: ${diagnoseWriteFailure(destFolder, dest, copyErr)}` })
           }
         } else {
+          if (cachedDriver && /no scanner devices found|device not found/i.test(result?.error ?? '')) {
+            const c = readConfig(); delete c.scanDriver
+            try { fs.writeFileSync(configPath(), JSON.stringify(c, null, 2), 'utf8') } catch {}
+          }
           resolve({ ok: false, error: result?.error ?? 'Scan failed' })
         }
       } else {
         const errLines = stderr.trim().split('\n').filter((l: string) => l.startsWith('{'))
         const result = errLines.length ? tryParse(errLines[errLines.length - 1]) : null
+        if (cachedDriver && /no scanner devices found|device not found/i.test(result?.error ?? '')) {
+          const c = readConfig(); delete c.scanDriver
+          try { fs.writeFileSync(configPath(), JSON.stringify(c, null, 2), 'utf8') } catch {}
+        }
         resolve({ ok: false, error: result?.error ?? `Scanner exited with code ${code}` })
       }
     })

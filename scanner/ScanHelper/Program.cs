@@ -118,10 +118,11 @@ class Program
 
         if (device == null)
         {
+            var triedNames = string.Join(" and ", driversToTry.Select(d => d.ToString().ToUpper()));
             return Error(deviceId != null
                 ? $"Device not found: {deviceId}"
                 : triedAny
-                    ? "No scanner devices found (checked TWAIN and WIA). Make sure your scanner is connected and its driver is installed."
+                    ? $"No scanner devices found (checked {triedNames}). Make sure your scanner is connected and its driver is installed."
                     : "Could not query any scanner drivers on this machine.");
         }
 
@@ -173,7 +174,7 @@ class Program
         await exporter.Export(dest, images, exportParams);
         foreach (var img in images) img.Dispose();
 
-        Console.WriteLine(Json(new { ok = true, path = dest, name = Path.GetFileName(dest), pages = images.Count }));
+        Console.WriteLine(Json(new { ok = true, path = dest, name = Path.GetFileName(dest), pages = images.Count, driver = driver.ToString().ToLower() }));
         return 0;
     }
 

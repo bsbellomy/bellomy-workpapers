@@ -46,11 +46,11 @@ const api = (window as unknown as { electronAPI?: {
   combineFiles:   (top:string,bot:string)=>Promise<{ok:boolean;error?:string}>
   pickScanner:    ()=>Promise<string|null>
   getScanInbox:   ()=>Promise<string>
-  startScan:       (destFolder:string,useNativeUI:boolean,dpi?:number,colorMode?:string,scanName?:string,skipBlank?:boolean)=>Promise<{ok:boolean;error?:string}>
+  startScan:       (destFolder:string,useNativeUI:boolean,dpi?:number,colorMode?:string,scanName?:string,skipBlank?:boolean,appendToPath?:string)=>Promise<{ok:boolean;error?:string}>
   listFolder:      (p:string)=>Promise<(DocFile|DocFolder)[]>
   listScanDevices: ()=>Promise<{ok:boolean;devices:{ID:string;Name:string;driver?:string}[];error?:string}>
   stopScanWatcher: ()=>Promise<void>
-  onScanFile:      (cb:(data:{name:string;destFolder:string})=>void)=>void
+  onScanFile:      (cb:(data:{name:string;destFolder:string;appended?:boolean})=>void)=>void
   onScanError:     (cb:(err:string)=>void)=>void
   onScanProgress:  (cb:(data:{page:number})=>void)=>void
   pickFolder:     ()=>Promise<string|null>
@@ -1197,11 +1197,12 @@ function MoveToDrawerModal({files,clients,rootPath,onClose,onMove}:MoveToDrawerP
 
 // ── Scan Destination Modal ────────────────────────────────────────────────────
 
-function ScanDestModal({clients,rootPath,defaultClient,defaultFolderPath,onClose,onStarted,onFailed}:{clients:string[];rootPath:string;defaultClient?:string|null;defaultFolderPath?:string|null;onClose:()=>void;onStarted:()=>void;onFailed:()=>void}){
+function ScanDestModal({clients,rootPath,defaultClient,defaultFolderPath,defaultAppendFile,onClose,onStarted,onFailed}:{clients:string[];rootPath:string;defaultClient?:string|null;defaultFolderPath?:string|null;defaultAppendFile?:{path:string;name:string}|null;onClose:()=>void;onStarted:()=>void;onFailed:()=>void}){
   const [search,setSearch]           = useState('')
   const [targetClient,setTargetClient] = useState<string|null>(null)
   const [folderTree,setFolderTree]   = useState<(DocFile|DocFolder)[]>([])
   const [destFolder,setDestFolder]   = useState<string|null>(null)
+  const [appendMode,setAppendMode]   = useState(!!defaultAppendFile)
   const [loading,setLoading]         = useState(false)
   const [starting,setStarting]       = useState(false)
   const [useNativeUI,setUseNativeUI] = useState(true)
@@ -1299,7 +1300,8 @@ function ScanDestModal({clients,rootPath,defaultClient,defaultFolderPath,onClose
     setStarting(true)
     onStarted()  // set scanning=true immediately before the await
     onClose()    // close modal so user can see the scanning indicator
-    const r=await api.startScan(destFolder,useNativeUI,scanDpi,colorMode,scanName.trim()||undefined,skipBlank)
+    const appendToPath=appendMode&&defaultAppendFile?defaultAppendFile.path:undefined
+    const r=await api.startScan(destFolder,useNativeUI,scanDpi,colorMode,scanName.trim()||undefined,skipBlank,appendToPath)
     if(!r.ok){
       alert('Could not start scan: '+(r.error??'Unknown error'))
       onFailed()  // reset scanning=false if it errors
@@ -1358,11 +1360,21 @@ function ScanDestModal({clients,rootPath,defaultClient,defaultFolderPath,onClose
           </div>
         </div>
         <div className="px-5 py-3 flex-shrink-0" style={{borderTop:`1px solid ${C.rule}`,backgroundColor:C.paperDeep}}>
+          {defaultAppendFile&&(
+            <label className="flex items-center gap-2 mb-2.5 px-2.5 py-1.5 rounded cursor-pointer" style={{backgroundColor:appendMode?C.ochreSoft:C.paper,border:`1px solid ${appendMode?C.ochre:C.rule}`}}>
+              <input type="checkbox" checked={appendMode} onChange={e=>setAppendMode(e.target.checked)}/>
+              <span className="sans truncate" style={{fontSize:12,color:appendMode?C.ochreDeep:C.inkSoft,fontWeight:appendMode?600:400}}>
+                Append new scan to the end of "{defaultAppendFile.name}" (currently open)
+              </span>
+            </label>
+          )}
           <div className="flex items-center justify-between mb-2">
-            <div className="mono truncate" style={{fontSize:11,color:C.inkMuted,flex:1,marginRight:16}}>{destFolder?`→ ${destFolder}`:'No folder selected'}</div>
+            <div className="mono truncate" style={{fontSize:11,color:C.inkMuted,flex:1,marginRight:16}}>
+              {appendMode&&defaultAppendFile?`→ appending to ${defaultAppendFile.name}`:destFolder?`→ ${destFolder}`:'No folder selected'}
+            </div>
           </div>
           {/* File name input + name buttons */}
-          <div className="mb-2.5">
+          <div className="mb-2.5" style={{opacity:appendMode?0.4:1,pointerEvents:appendMode?'none':'auto'}}>
             <input type="text" placeholder="File name (optional — leave blank for auto)" value={scanName} onChange={e=>setScanName(e.target.value)}
               className="w-full outline-none sans px-2 py-1 rounded mb-1.5"
               style={{fontSize:12,backgroundColor:C.paper,border:`1px solid ${C.rule}`,color:C.ink}}/>
@@ -1614,7 +1626,7 @@ function EmailLinkModal({initialItems,siblingFiles,author,onClose}:{initialItems
       ``,
       `Please find your document${links.length>1?'s':''} below. ${links.length>1?'These links':'This link'} will expire in ${expiresLabel} and can only be opened once, so please save a copy after viewing.`,
       ``,
-      ...links.map(l=>`${l.name}: ${l.url}`),
+      ...links.flatMap(l=>[`${l.name}:`,l.url,``]),
       ``,
       `Thank you,`,
     ].join('\n')
@@ -1804,6 +1816,18 @@ export default function App(){
     return tree
       .filter(n=>!(n.type==='file'&&paths.includes(n.path)))
       .map(n=>n.type==='folder'?{...n,children:removeFilesFromTree(n.children,paths)}:n)
+  }
+
+  // Helper: find the files in the same folder as filePath (for "add more files" pickers)
+  function findSiblingFiles(tree:(DocFile|DocFolder)[], filePath:string): DocFile[] {
+    function search(nodes:(DocFile|DocFolder)[]):DocFile[]|null {
+      if(nodes.some(n=>n.type==='file'&&n.path===filePath)) return nodes.filter((n):n is DocFile=>n.type==='file')
+      for(const n of nodes){
+        if(n.type==='folder'){ const found=search(n.children); if(found) return found }
+      }
+      return null
+    }
+    return search(tree)??[]
   }
 
   // Helper: replace children of a folder node deep in the tree
@@ -2028,10 +2052,10 @@ export default function App(){
 
   // Register scan event listeners (once on mount) — use ref so closure always has latest refreshDocs
   useEffect(()=>{
-    api?.onScanFile(({name,destFolder})=>{
+    api?.onScanFile(({name,destFolder,appended})=>{
       setScanning(false); setScanPage(0)
       const id=crypto.randomUUID()
-      setScanToasts(prev=>[...prev,{id,name}])
+      setScanToasts(prev=>[...prev,{id,name:appended?`${name} (pages appended)`:name}])
       setTimeout(()=>setScanToasts(prev=>prev.filter(t=>t.id!==id)),5000)
       refreshDocsRef.current(300)
       const scannedPath=destFolder.replace(/[\\/]$/,'')+`\\${name}`
@@ -2047,10 +2071,14 @@ export default function App(){
           const f=findFile(prev)
           if(f){
             setSelectedFile(f)
-            api?.getAnnotations(f.path).then(ann=>{
-              const next={...ann,addedAt:new Date().toISOString(),addedBy:authorRef.current||null}
-              api?.saveAnnotations(f.path,next)
-            })
+            if(appended){
+              api?.readPdf(f.path).then(b=>{ if(b) setPdfBytes(b) })
+            } else {
+              api?.getAnnotations(f.path).then(ann=>{
+                const next={...ann,addedAt:new Date().toISOString(),addedBy:authorRef.current||null}
+                api?.saveAnnotations(f.path,next)
+              })
+            }
           }
           return prev
         })
@@ -2228,7 +2256,7 @@ export default function App(){
 
   async function emailCurrentFile(){
     if(!selectedFile) return
-    setEmailModal({items:[{name:selectedFile.name,path:selectedFile.path}],siblings:[]})
+    setEmailModal({items:[{name:selectedFile.name,path:selectedFile.path}],siblings:findSiblingFiles(docTree,selectedFile.path)})
   }
 
   async function emailCurrentPage(){
@@ -3227,7 +3255,7 @@ export default function App(){
             <button className="w-full text-left px-4 py-2.5 sans row-hover flex items-center gap-2" style={{fontSize:13,color:C.ink,borderTop:`1px solid ${C.ruleSoft}`}} onClick={()=>{setMoveDrawer(affectedFiles);setCtxMenu(null)}}>
               📁 <span>{isBulk?`Move ${affectedFiles.length} files to Another Drawer`:'Move to Another Drawer'}</span>
             </button>
-            <button className="w-full text-left px-4 py-2.5 sans row-hover flex items-center gap-2" style={{fontSize:13,color:C.ink,borderTop:`1px solid ${C.ruleSoft}`}} onClick={()=>{setEmailModal({items:affectedFiles.map(f=>({name:f.name,path:f.path})),siblings:[]});setCtxMenu(null)}}>
+            <button className="w-full text-left px-4 py-2.5 sans row-hover flex items-center gap-2" style={{fontSize:13,color:C.ink,borderTop:`1px solid ${C.ruleSoft}`}} onClick={()=>{setEmailModal({items:affectedFiles.map(f=>({name:f.name,path:f.path})),siblings:findSiblingFiles(docTree,ctxMenu.file.path)});setCtxMenu(null)}}>
               ✉️ <span>{isBulk?`Email ${affectedFiles.length} Files…`:'Email File…'}</span>
             </button>
             {!isBulk&&(
@@ -3332,7 +3360,7 @@ export default function App(){
 
       {/* ── Scan destination modal ── */}
       {showScanModal&&(
-        <ScanDestModal clients={clients} rootPath={rootPath} defaultClient={selectedClient} defaultFolderPath={activeFolder?.path??null} onClose={()=>setShowScanModal(false)} onStarted={()=>setScanning(true)} onFailed={()=>setScanning(false)}/>
+        <ScanDestModal clients={clients} rootPath={rootPath} defaultClient={selectedClient} defaultFolderPath={activeFolder?.path??null} defaultAppendFile={selectedFile&&isPdfFile(selectedFile.name)?{path:selectedFile.path,name:selectedFile.name}:null} onClose={()=>setShowScanModal(false)} onStarted={()=>setScanning(true)} onFailed={()=>setScanning(false)}/>
       )}
 
       {/* ── Scan settings modal ── */}
