@@ -1647,7 +1647,7 @@ function EmailLinkModal({initialItems,clientFiles,author,onClose}:{initialItems:
     setSending(false)
     if(!r?.ok){ setError(r?.error??'Could not send magic links.'); return }
     const failed=(r.results??[]).filter(x=>!x.url)
-    if(failed.length){ setError(`Some files failed to upload: ${failed.map(f=>f.name).join(', ')}`); }
+    if(failed.length){ setError(failed.map(f=>`${f.name}: ${f.error??'unknown error'}`).join('\n')); }
     const links=(r.results??[]).filter(x=>x.url)
     if(links.length===0) return
     const expiresLabel=expiresDays===1?'1 day':`${expiresDays} days`
@@ -1699,7 +1699,7 @@ function EmailLinkModal({initialItems,clientFiles,author,onClose}:{initialItems:
             </select>
           </div>
           <div style={{fontSize:11,color:C.inkFaint}}>Links can only be opened once and self-delete after that or after expiry.</div>
-          {error&&<div style={{fontSize:12,color:'#B5443A'}}>{error}</div>}
+          {error&&<div style={{fontSize:12,color:'#B5443A',whiteSpace:'pre-wrap'}}>{error}</div>}
         </div>
         <div className="px-5 py-3 flex justify-end gap-2" style={{borderTop:`1px solid ${C.rule}`,backgroundColor:C.paperDeep}}>
           <button onClick={onClose} className="px-4 py-1.5 rounded sans" style={{fontSize:12,border:`1px solid ${C.rule}`,color:C.inkSoft,backgroundColor:C.paper}}>Cancel</button>

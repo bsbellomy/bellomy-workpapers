@@ -138,11 +138,15 @@ ipcMain.handle('fs:sendMagicLinks', async (_e, items: { name: string; path?: str
         },
         body: new Uint8Array(data),
       })
-      if (!resp.ok) { results.push({ name: item.name, error: `Upload failed (HTTP ${resp.status})` }); continue }
+      if (!resp.ok) {
+        const body = await resp.text().catch(()=>'')
+        results.push({ name: item.name, error: `Upload failed (HTTP ${resp.status}): ${body}` }); continue
+      }
       const json = await resp.json() as { url: string }
       results.push({ name: item.name, url: json.url })
     } catch (err: unknown) {
-      results.push({ name: item.name, error: String(err) })
+      const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err)
+      results.push({ name: item.name, error: msg })
     }
   }
   return { ok: true, results }
