@@ -37,7 +37,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setConfig:       (k:string, v:unknown) => ipcRenderer.invoke('fs:setConfig', k, v),
   setSecret:       (k:string, v:string) => ipcRenderer.invoke('fs:setSecret', k, v),
   getMagicLinkConfig: () => ipcRenderer.invoke('fs:getMagicLinkConfig'),
-  sendMagicLinks:  (items:{name:string;path?:string;bytes?:ArrayBuffer}[], expiresDays:number) => ipcRenderer.invoke('fs:sendMagicLinks', items, expiresDays),
+  sendMagicLinks:  (items:{name:string;path?:string;bytes?:ArrayBuffer;pages?:string}[], expiresDays:number) => ipcRenderer.invoke('fs:sendMagicLinks', items, expiresDays),
   openExternal:    (url:string) => ipcRenderer.invoke('fs:openExternal', url),
   printFile:       (p:string) => ipcRenderer.invoke('fs:printFile', p),
   printBytes:      (b:ArrayBuffer) => ipcRenderer.invoke('fs:printBytes', b),

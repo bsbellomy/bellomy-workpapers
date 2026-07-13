@@ -119,7 +119,24 @@ ipcMain.handle('fs:getMagicLinkConfig', () => {
 })
 
 // ── Magic links: upload file(s) to the Cloudflare Worker, get back single-view links ──
-ipcMain.handle('fs:sendMagicLinks', async (_e, items: { name: string; path?: string; bytes?: ArrayBuffer }[], expiresDays: number) => {
+function parsePageRanges(rangeStr: string, totalPages: number): number[] {
+  const indices: number[] = []
+  for (const part of rangeStr.split(',')) {
+    const t = part.trim()
+    const dash = t.indexOf('-')
+    if (dash > 0) {
+      const a = parseInt(t.slice(0, dash)) - 1
+      const b = parseInt(t.slice(dash + 1)) - 1
+      for (let i = Math.max(0, a); i <= Math.min(totalPages - 1, b); i++) indices.push(i)
+    } else {
+      const n = parseInt(t) - 1
+      if (n >= 0 && n < totalPages) indices.push(n)
+    }
+  }
+  return [...new Set(indices)].sort((a, b) => a - b)
+}
+
+ipcMain.handle('fs:sendMagicLinks', async (_e, items: { name: string; path?: string; bytes?: ArrayBuffer; pages?: string }[], expiresDays: number) => {
   const secrets = readSecrets()
   const workerUrl = (secrets.workerUrl || DEFAULT_WORKER_URL).replace(/\/$/, '')
   const uploadSecret = secrets.uploadSecret ?? ''
@@ -127,7 +144,17 @@ ipcMain.handle('fs:sendMagicLinks', async (_e, items: { name: string; path?: str
   const results: { name: string; url?: string; error?: string }[] = []
   for (const item of items) {
     try {
-      const data: Buffer = item.bytes ? Buffer.from(item.bytes) : fs.readFileSync(item.path!)
+      let data: Buffer = item.bytes ? Buffer.from(item.bytes) : fs.readFileSync(item.path!)
+      if (item.pages && item.pages.trim() && item.path) {
+        const { PDFDocument } = await import('pdf-lib')
+        const srcDoc = await PDFDocument.load(data)
+        const indices = parsePageRanges(item.pages, srcDoc.getPageCount())
+        if (indices.length === 0) { results.push({ name: item.name, error: `No valid pages in range "${item.pages}"` }); continue }
+        const outDoc = await PDFDocument.create()
+        const copied = await outDoc.copyPages(srcDoc, indices)
+        copied.forEach(p => outDoc.addPage(p))
+        data = Buffer.from(await outDoc.save())
+      }
       const resp = await fetch(`${workerUrl}/upload`, {
         method: 'POST',
         headers: {

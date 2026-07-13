@@ -72,7 +72,7 @@ const api = (window as unknown as { electronAPI?: {
   setConfig:      (k:string,v:unknown)=>Promise<boolean>
   setSecret:      (k:string,v:string)=>Promise<boolean>
   getMagicLinkConfig: ()=>Promise<{workerUrl:string;hasUploadSecret:boolean}>
-  sendMagicLinks: (items:{name:string;path?:string;bytes?:ArrayBuffer}[],expiresDays:number)=>Promise<{ok:boolean;error?:string;results?:{name:string;url?:string;error?:string}[]}>
+  sendMagicLinks: (items:{name:string;path?:string;bytes?:ArrayBuffer;pages?:string}[],expiresDays:number)=>Promise<{ok:boolean;error?:string;results?:{name:string;url?:string;error?:string}[]}>
   openExternal:   (url:string)=>Promise<boolean>
   printFile:      (p:string)=>Promise<{ok:boolean;error?:string}>
   printBytes:     (b:ArrayBuffer)=>Promise<{ok:boolean;error?:string}>
@@ -1632,6 +1632,7 @@ interface EmailItem { name:string; path?:string; bytes?:ArrayBuffer }
 
 function EmailLinkModal({initialItems,clientFiles,author,onClose}:{initialItems:EmailItem[];clientFiles:DocFile[];author:string;onClose:()=>void}){
   const [selected,setSelected] = useState<Set<string>>(new Set(initialItems.map(i=>i.name)))
+  const [pageRanges,setPageRanges] = useState<Record<string,string>>({})
   const [expiresDays,setExpiresDays] = useState(7)
   const [sending,setSending]   = useState(false)
   const [error,setError]       = useState<string|null>(null)
@@ -1641,7 +1642,10 @@ function EmailLinkModal({initialItems,clientFiles,author,onClose}:{initialItems:
 
   async function handleSend(){
     setSending(true); setError(null)
-    const items=allItems.filter(i=>selected.has(i.name))
+    const items=allItems.filter(i=>selected.has(i.name)).map(i=>({
+      ...i,
+      pages: pageRanges[i.name]?.trim()||undefined,
+    }))
     if(items.length===0){ setError('Select at least one file.'); setSending(false); return }
     const r=await api?.sendMagicLinks(items,expiresDays)
     setSending(false)
@@ -1675,17 +1679,35 @@ function EmailLinkModal({initialItems,clientFiles,author,onClose}:{initialItems:
         </div>
         <div className="p-5 flex flex-col gap-3 overflow-y-auto">
           <div className="sans" style={{fontSize:11,color:C.inkMuted,fontWeight:600,textTransform:'uppercase',letterSpacing:0.5}}>Files to send</div>
-          <div className="flex flex-col gap-1" style={{maxHeight:220,overflowY:'auto'}}>
-            {allItems.map(item=>(
-              <label key={item.name} className="flex items-center gap-2 px-2 py-1.5 rounded" style={{backgroundColor:C.paperDeep,cursor:'pointer'}}>
-                <input type="checkbox" checked={selected.has(item.name)} onChange={()=>setSelected(prev=>{
-                  const next=new Set(prev)
-                  if(next.has(item.name)) next.delete(item.name); else next.add(item.name)
-                  return next
-                })}/>
-                <span className="sans truncate" style={{fontSize:13,color:C.ink}}>{item.name}</span>
-              </label>
-            ))}
+          <div className="flex flex-col gap-1" style={{maxHeight:280,overflowY:'auto'}}>
+            {allItems.map(item=>{
+              const isPdf=item.name.toLowerCase().endsWith('.pdf')
+              const isSel=selected.has(item.name)
+              return(
+                <div key={item.name} className="rounded" style={{backgroundColor:C.paperDeep}}>
+                  <label className="flex items-center gap-2 px-2 py-1.5" style={{cursor:'pointer'}}>
+                    <input type="checkbox" checked={isSel} onChange={()=>setSelected(prev=>{
+                      const next=new Set(prev)
+                      if(next.has(item.name)) next.delete(item.name); else next.add(item.name)
+                      return next
+                    })}/>
+                    <span className="sans truncate" style={{fontSize:13,color:C.ink}}>{item.name}</span>
+                  </label>
+                  {isSel&&isPdf&&(
+                    <div className="flex items-center gap-2 px-2 pb-1.5" onClick={e=>e.stopPropagation()}>
+                      <span className="sans" style={{fontSize:11,color:C.inkMuted,whiteSpace:'nowrap'}}>Pages:</span>
+                      <input
+                        className="flex-1 rounded px-2 py-0.5 sans"
+                        style={{fontSize:11,border:`1px solid ${C.rule}`,backgroundColor:C.paper,color:C.ink}}
+                        placeholder="all  (e.g. 1-3, 5, 8)"
+                        value={pageRanges[item.name]??''}
+                        onChange={e=>setPageRanges(prev=>({...prev,[item.name]:e.target.value}))}
+                      />
+                    </div>
+                  )}
+                </div>
+              )
+            })}
           </div>
           <div>
             <label className="sans" style={{fontSize:11,color:C.inkMuted,fontWeight:600,textTransform:'uppercase',letterSpacing:0.5}}>Link expires after</label>
