@@ -2297,8 +2297,8 @@ export default function App(){
       const [pg]=await doc.copyPages(src,[currentPage-1])
       doc.addPage(pg)
       const saved=await doc.save({useObjectStreams:false})
-      const buf=saved.buffer.slice(saved.byteOffset,saved.byteOffset+saved.byteLength)
-      const r=await api.printBytes(buf)
+      const buf=saved.buffer.slice(saved.byteOffset,saved.byteOffset+saved.byteLength) as ArrayBuffer
+      const r=await api.printBytes(buf.slice(0))
       if(!r.ok) alert('Print failed: '+(r.error??''))
     }catch(e){alert('Print failed: '+String(e))}
   }
@@ -2322,7 +2322,7 @@ export default function App(){
       const [pg]=await doc.copyPages(src,[currentPage-1])
       doc.addPage(pg)
       const saved=await doc.save({useObjectStreams:false})
-      const buf=saved.buffer.slice(saved.byteOffset,saved.byteOffset+saved.byteLength) as ArrayBuffer
+      const buf=(saved.buffer.slice(saved.byteOffset,saved.byteOffset+saved.byteLength) as ArrayBuffer).slice(0)
       const name=selectedFile.name.replace(/\.[^.]+$/,'')+`_p${currentPage}.pdf`
       setEmailModal({items:[{name,bytes:buf}],clientFiles:flatFiles(docTree)})
     }catch(e){ alert('Could not prepare page for email: '+String(e)) }
