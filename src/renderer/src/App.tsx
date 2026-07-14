@@ -2289,10 +2289,12 @@ export default function App(){
   }
 
   async function handlePrintPage(){
-    if(!api||!pdfBytes) return
+    if(!api||!selectedFile) return
     try{
+      const fresh=await api.readPdf(selectedFile.path)
+      if(!fresh) return
       const {PDFDocument}=await import('pdf-lib')
-      const src=await PDFDocument.load(pdfBytes)
+      const src=await PDFDocument.load(fresh)
       const doc=await PDFDocument.create()
       const [pg]=await doc.copyPages(src,[currentPage-1])
       doc.addPage(pg)
