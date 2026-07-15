@@ -422,26 +422,22 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
                       <span className="mono" style={{fontSize:10,color:C.inkMuted}}>Pg {i+1}</span>
                       {assignments[i]?(
                         <div className="flex items-center gap-1">
-                          <span className="sans" style={{fontSize:10,color:C.ochreDeep,backgroundColor:customTitles[i]!==undefined?'#D8E8D0':C.ochreLight,padding:'1px 5px',borderRadius:3,fontWeight:600}}
-                            title={customTitles[i]!==undefined?'Promoted to its own top-level bookmark':undefined}>
-                            {customTitles[i]!==undefined?customTitles[i]||buttons.find(b=>b.id===assignments[i])?.label:buttons.find(b=>b.id===assignments[i])?.label}
-                          </span>
-                          <button
-                            onClick={e=>{
-                              e.stopPropagation()
-                              const current=customTitles[i]??buttons.find(b=>b.id===assignments[i])?.label??''
-                              const next=window.prompt('Bookmark title for this page (clear to ungroup from the shared category bookmark):',current)
-                              if(next===null) return
-                              setCustomTitles(p=>{
-                                const n={...p}
-                                if(next.trim()==='') delete n[i]
-                                else n[i]=next.trim()
-                                return n
-                              })
-                            }}
-                            title="Promote &amp; rename as its own top-level bookmark"
-                            style={{color:customTitles[i]!==undefined?'#3D7A2E':C.inkFaint,fontWeight:700,fontSize:9,padding:'0 3px'}}
-                          >P</button>
+                          <div className="flex items-center sans" style={{fontSize:10,borderRadius:3,overflow:'hidden',fontWeight:600,border:`1px solid ${customTitles[i]!==undefined?'#8aba7e':C.ochreLight}`}}>
+                            <span style={{color:C.ochreDeep,backgroundColor:customTitles[i]!==undefined?'#D8E8D0':C.ochreLight,padding:'1px 5px'}}>
+                              {customTitles[i]!==undefined?customTitles[i]||buttons.find(b=>b.id===assignments[i])?.label:buttons.find(b=>b.id===assignments[i])?.label}
+                            </span>
+                            <button
+                              title="Promote to its own top-level bookmark"
+                              onClick={e=>{
+                                e.stopPropagation()
+                                const current=customTitles[i]??buttons.find(b=>b.id===assignments[i])?.label??''
+                                const next=window.prompt('Promote: enter a title for this page (clear to regroup under shared category):',current)
+                                if(next===null) return
+                                setCustomTitles(p=>{const n={...p};if(next.trim()==='') delete n[i];else n[i]=next.trim();return n})
+                              }}
+                              style={{backgroundColor:customTitles[i]!==undefined?'#8aba7e':'rgba(0,0,0,0.08)',borderLeft:`1px solid ${customTitles[i]!==undefined?'#6aa35e':'rgba(0,0,0,0.12)'}`,color:customTitles[i]!==undefined?'#fff':C.inkFaint,fontWeight:700,fontSize:9,padding:'0 4px',lineHeight:'18px'}}
+                            >P</button>
+                          </div>
                           <button onClick={e=>{e.stopPropagation();setAssignments(p=>{const n={...p};delete n[i];return n});setCustomTitles(p=>{const n={...p};delete n[i];return n})}} style={{color:C.inkFaint}}><X size={9}/></button>
                         </div>
                       ):(

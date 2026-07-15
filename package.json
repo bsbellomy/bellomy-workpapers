@@ -1,6 +1,6 @@
 {
   "name": "bellomy-workpapers",
-  "version": "1.0.34",
+  "version": "1.0.35",
   "description": "Tax document viewer for Bellomy Accounting",
   "main": "dist/main/main/main.js",
   "scripts": {
