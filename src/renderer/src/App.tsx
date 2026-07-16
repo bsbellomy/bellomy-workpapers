@@ -460,14 +460,28 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
               {buttons.length===0&&<div style={{gridColumn:'1/-1',color:C.inkFaint,fontSize:11,textAlign:'center',padding:'16px 8px'}}>No buttons yet — add one below.</div>}
               {buttons.map((btn,i)=>(
                 <div key={btn.id} className="flex items-center gap-1">
-                  <button onClick={()=>{
-                    setAssignments(p=>({...p,[selPage]:btn.id}))
-                    setSelPage(p=>Math.min(p+1,pageCount-1))
-                  }}
-                    className="flex-1 text-left rounded px-3 py-2 sans"
-                    style={{fontSize:12,backgroundColor:C.ochreSoft,color:C.ochreDeep,border:`1px solid ${C.ochreLight}`,fontWeight:600}}>
-                    {btn.label}
-                  </button>
+                  <div className="flex-1 flex rounded overflow-hidden sans" style={{border:`1px solid ${C.ochreLight}`,fontWeight:600}}>
+                    <button onClick={()=>{
+                      setAssignments(p=>({...p,[selPage]:btn.id}))
+                      setSelPage(p=>Math.min(p+1,pageCount-1))
+                    }}
+                      className="flex-1 text-left px-3 py-2"
+                      style={{fontSize:12,backgroundColor:C.ochreSoft,color:C.ochreDeep}}>
+                      {btn.label}
+                    </button>
+                    <button
+                      title="Assign & promote to its own top-level bookmark"
+                      onClick={()=>{
+                        const title=window.prompt('Promote: enter a title for this page:',btn.label)
+                        if(title===null) return
+                        setAssignments(p=>({...p,[selPage]:btn.id}))
+                        if(title.trim()) setCustomTitles(p=>({...p,[selPage]:title.trim()}))
+                        setSelPage(p=>Math.min(p+1,pageCount-1))
+                      }}
+                      style={{backgroundColor:'rgba(0,0,0,0.06)',borderLeft:`1px solid ${C.ochreLight}`,color:C.inkFaint,fontWeight:700,fontSize:10,padding:'0 6px'}}>
+                      P
+                    </button>
+                  </div>
                   <button onClick={()=>moveBtn(i,-1)} disabled={i===0} style={{color:C.inkFaint,fontSize:12,padding:'0 2px',opacity:i===0?0.3:1}}>↑</button>
                   <button onClick={()=>moveBtn(i,1)} disabled={i===buttons.length-1} style={{color:C.inkFaint,fontSize:12,padding:'0 2px',opacity:i===buttons.length-1?0.3:1}}>↓</button>
                   <button onClick={()=>saveButtons(buttons.filter((_,j)=>j!==i))} style={{color:'#B5443A',padding:'0 2px'}}><X size={11}/></button>
@@ -1943,29 +1957,8 @@ export default function App(){
     setZoom(Math.max(25,Math.min(400,newZoom)))
   },[pageSize])
 
-  // Mouse wheel: when scrolled to the bottom/top of the page, advance/retreat pages
-  const handlePdfWheel=useCallback((e:React.WheelEvent<HTMLDivElement>)=>{
-    const el=pdfScrollRef.current
-    if(!el) return
-    const atBottom = el.scrollTop+el.clientHeight >= el.scrollHeight-2
-    const atTop = el.scrollTop<=2
-    if(e.deltaY>0 && atBottom && currentPage<pageCount){
-      if(wheelLockRef.current) return
-      wheelLockRef.current=true
-      setCurrentPage(p=>Math.min(pageCount,p+1))
-      el.scrollTo({top:0})
-      setTimeout(()=>{wheelLockRef.current=false},400)
-    } else if(e.deltaY<0 && atTop && currentPage>1){
-      if(wheelLockRef.current) return
-      wheelLockRef.current=true
-      setCurrentPage(p=>Math.max(1,p-1))
-      setTimeout(()=>{
-        const el2=pdfScrollRef.current
-        if(el2) el2.scrollTo({top:el2.scrollHeight})
-        wheelLockRef.current=false
-      },50)
-    }
-  },[currentPage,pageCount])
+  const handlePdfWheel=useCallback((_e:React.WheelEvent<HTMLDivElement>)=>{},[])
+
 
   // Load PDF + annotations when file selected
   useEffect(()=>{
