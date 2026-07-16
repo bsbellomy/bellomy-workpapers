@@ -478,7 +478,7 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
                         if(title.trim()) setCustomTitles(p=>({...p,[selPage]:title.trim()}))
                         setSelPage(p=>Math.min(p+1,pageCount-1))
                       }}
-                      style={{backgroundColor:'rgba(0,0,0,0.06)',borderLeft:`1px solid ${C.ochreLight}`,color:C.inkFaint,fontWeight:700,fontSize:10,padding:'0 6px'}}>
+                      style={{backgroundColor:'rgba(0,0,0,0.06)',borderLeft:`1px solid ${C.ochreLight}`,color:C.inkFaint,fontWeight:700,fontSize:11,padding:'0 10px',minWidth:28,flexShrink:0}}>
                       P
                     </button>
                   </div>
