@@ -201,8 +201,9 @@ ipcMain.handle('fs:createUploadRequest', async (_e, label: string, instructions:
     if (!resp.ok) return { ok: false, error: `HTTP ${resp.status}` }
     const { token, url } = await resp.json() as { token: string; url: string }
     // Store token→folderPath mapping locally so we know where to save files
+    type UReqs = Record<string, { label: string; folderPath: string; url: string; createdAt: string; expiresDays: number }>
     const cfg = readConfig()
-    const requests: Record<string, { label: string; folderPath: string; url: string; createdAt: string; expiresDays: number }> = cfg.uploadRequests ?? {}
+    const requests: UReqs = (cfg.uploadRequests as UReqs) ?? {}
     requests[token] = { label, folderPath, url, createdAt: new Date().toISOString(), expiresDays }
     const merged = { ...cfg, uploadRequests: requests }
     fs.writeFileSync(configPath(), JSON.stringify(merged, null, 2), 'utf8')
@@ -235,8 +236,9 @@ ipcMain.handle('fs:checkUploads', async (_e, token: string) => {
 ipcMain.handle('fs:downloadAndSaveUpload', async (_e, token: string, filename: string) => {
   const { workerUrl, uploadSecret } = workerAuth()
   if (!uploadSecret) return { ok: false, error: 'Not configured.' }
+  type UReqs = Record<string, { label: string; folderPath: string; url: string; createdAt: string; expiresDays: number }>
   const cfg = readConfig()
-  const req = (cfg.uploadRequests ?? {})[token]
+  const req = ((cfg.uploadRequests as UReqs) ?? {})[token]
   if (!req) return { ok: false, error: 'Unknown upload request token.' }
   try {
     const resp = await fetch(`${workerUrl}/download-upload/${token}/${encodeURIComponent(filename)}`, {
@@ -265,8 +267,9 @@ ipcMain.handle('fs:revokeUploadRequest', async (_e, token: string) => {
       method: 'DELETE',
       headers: { 'Authorization': `Bearer ${uploadSecret}` },
     })
+    type UReqs = Record<string, unknown>
     const cfg = readConfig()
-    const requests = { ...(cfg.uploadRequests ?? {}) }
+    const requests = { ...((cfg.uploadRequests as UReqs) ?? {}) }
     delete requests[token]
     const merged = { ...cfg, uploadRequests: requests }
     fs.writeFileSync(configPath(), JSON.stringify(merged, null, 2), 'utf8')
