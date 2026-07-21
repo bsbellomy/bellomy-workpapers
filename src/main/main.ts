@@ -9,6 +9,7 @@ const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
 autoUpdater.autoDownload = true
 autoUpdater.autoInstallOnAppQuit = true
+autoUpdater.logger = null // suppress to stderr; we surface status via IPC
 
 // ── Scan inbox ────────────────────────────────────────────────────────────────
 let mainWin: BrowserWindow | null = null
@@ -356,6 +357,26 @@ function createWindow() {
   ipcMain.on('win:maximize', () => win.isMaximized() ? win.unmaximize() : win.maximize())
   ipcMain.on('win:close',    () => win.close())
 }
+
+ipcMain.handle('fs:getVersion', () => app.getVersion())
+
+ipcMain.handle('fs:checkForUpdates', async () => {
+  if (isDev) return { status: 'dev', message: 'Updates disabled in dev mode.' }
+  try {
+    const result = await autoUpdater.checkForUpdates()
+    if (!result) return { status: 'error', message: 'Could not reach update server.' }
+    const latest = result.updateInfo.version
+    const current = app.getVersion()
+    if (latest === current) return { status: 'latest', message: `You're on the latest version (${current}).` }
+    return { status: 'available', message: `Update available: v${latest} (you have v${current}). It will install on next restart.`, version: latest }
+  } catch (err: unknown) {
+    return { status: 'error', message: `Update check failed: ${err instanceof Error ? err.message : String(err)}` }
+  }
+})
+
+autoUpdater.on('update-downloaded', () => {
+  mainWin?.webContents.send('update:downloaded')
+})
 
 app.whenReady().then(() => {
   cleanScanInbox() // purge any leftover files from previous session

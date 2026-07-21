@@ -81,6 +81,9 @@ const api = (window as unknown as { electronAPI?: {
   revokeUploadRequest:(token:string)=>Promise<{ok:boolean;error?:string}>
   printFile:      (p:string)=>Promise<{ok:boolean;error?:string}>
   printBytes:     (b:ArrayBuffer)=>Promise<{ok:boolean;error?:string}>
+  getVersion:      ()=>Promise<string>
+  checkForUpdates: ()=>Promise<{status:string;message:string;version?:string}>
+  onUpdateDownloaded: (cb:()=>void)=>void
   minimizeWindow: ()=>void
   maximizeWindow: ()=>void
   closeWindow:    ()=>void
@@ -2026,6 +2029,11 @@ export default function App(){
   const tapeInputRef = useRef<HTMLInputElement|null>(null)
   const [author,setAuthorState]=useState('')
   const [showNamePrompt,setShowNamePrompt]=useState(false)
+  const [appVersion,setAppVersion]=useState('')
+  const [updateStatus,setUpdateStatus]=useState<{message:string;type:'info'|'success'|'error'}|null>(null)
+  const [updateReady,setUpdateReady]=useState(false)
+  useEffect(()=>{ api?.getVersion().then(v=>setAppVersion(v)) },[api])
+  useEffect(()=>{ api?.onUpdateDownloaded(()=>setUpdateReady(true)) },[api])
   useEffect(()=>{
     api?.getConfig('userName').then(v=>{
       if(typeof v==='string'&&v.trim()) setAuthorState(v.trim())
@@ -2500,6 +2508,17 @@ export default function App(){
     const id=setInterval(poll,120000)
     return ()=>clearInterval(id)
   },[api])
+
+  async function handleCheckForUpdates(){
+    setUpdateStatus({message:'Checking for updates…',type:'info'})
+    const r=await api?.checkForUpdates()
+    if(!r) return
+    setUpdateStatus({
+      message: r.message,
+      type: r.status==='available'||r.status==='latest'?'success':'error'
+    })
+    setTimeout(()=>setUpdateStatus(null), 6000)
+  }
 
   async function emailCurrentFile(){
     if(!selectedFile) return
@@ -3420,6 +3439,13 @@ export default function App(){
                 </>
               )}
               {selectedClient&&<span className="mono" style={{color:C.inkFaint}}><span style={{color:C.ochreLight}}>TaxDome</span> {selectedClient}</span>}
+              {selectedClient&&appVersion&&<span style={{color:C.inkFaint}}>·</span>}
+              {appVersion&&(
+                <button className="mono" onClick={handleCheckForUpdates} title="Check for updates"
+                  style={{color:updateReady?C.ochre:C.inkFaint,background:'none',border:'none',padding:0,cursor:'pointer',fontSize:'inherit'}}>
+                  v{appVersion}{updateReady?' ↑':''}
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -3760,6 +3786,16 @@ export default function App(){
       )}
 
       {/* ── Scan toasts ── */}
+      {updateStatus&&(
+        <div className="fixed bottom-4 left-1/2 z-50 sans" style={{transform:'translateX(-50%)',backgroundColor:C.ink,color:C.paperLight,borderRadius:6,padding:'10px 18px',fontSize:13,boxShadow:'0 4px 16px rgba(26,22,18,0.3)',display:'flex',alignItems:'center',gap:10,maxWidth:480}}>
+          {updateStatus.type==='info'&&<RefreshCw size={13} style={{color:C.inkFaint,flexShrink:0}}/>}
+          {updateStatus.type==='success'&&<Check size={13} style={{color:'#7BC95A',flexShrink:0}}/>}
+          {updateStatus.type==='error'&&<X size={13} style={{color:'#B5443A',flexShrink:0}}/>}
+          <span>{updateStatus.message}</span>
+          <button onClick={()=>setUpdateStatus(null)} style={{color:C.inkFaint,marginLeft:4}}><X size={12}/></button>
+        </div>
+      )}
+
       {scanToasts.length>0&&(
         <div className="fixed bottom-4 right-4 flex flex-col gap-2 z-50">
           {scanToasts.map(t=>(
