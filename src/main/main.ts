@@ -179,6 +179,103 @@ ipcMain.handle('fs:sendMagicLinks', async (_e, items: { name: string; path?: str
   return { ok: true, results }
 })
 
+// ── Upload requests: request files FROM clients ───────────────────────────────
+
+function workerAuth() {
+  const secrets = readSecrets()
+  return {
+    workerUrl: (secrets.workerUrl || DEFAULT_WORKER_URL).replace(/\/$/, ''),
+    uploadSecret: secrets.uploadSecret ?? '',
+  }
+}
+
+ipcMain.handle('fs:createUploadRequest', async (_e, label: string, instructions: string, expiresDays: number, folderPath: string) => {
+  const { workerUrl, uploadSecret } = workerAuth()
+  if (!uploadSecret) return { ok: false, error: 'Magic link is not configured.' }
+  try {
+    const resp = await fetch(`${workerUrl}/create-upload-request`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${uploadSecret}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label, instructions, expiresDays }),
+    })
+    if (!resp.ok) return { ok: false, error: `HTTP ${resp.status}` }
+    const { token, url } = await resp.json() as { token: string; url: string }
+    // Store token→folderPath mapping locally so we know where to save files
+    const cfg = readConfig()
+    const requests: Record<string, { label: string; folderPath: string; url: string; createdAt: string; expiresDays: number }> = cfg.uploadRequests ?? {}
+    requests[token] = { label, folderPath, url, createdAt: new Date().toISOString(), expiresDays }
+    const merged = { ...cfg, uploadRequests: requests }
+    fs.writeFileSync(configPath(), JSON.stringify(merged, null, 2), 'utf8')
+    return { ok: true, token, url }
+  } catch (err: unknown) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+})
+
+ipcMain.handle('fs:listUploadRequests', () => {
+  const cfg = readConfig()
+  return cfg.uploadRequests ?? {}
+})
+
+ipcMain.handle('fs:checkUploads', async (_e, token: string) => {
+  const { workerUrl, uploadSecret } = workerAuth()
+  if (!uploadSecret) return { ok: false, error: 'Not configured.' }
+  try {
+    const resp = await fetch(`${workerUrl}/check-uploads/${token}`, {
+      headers: { 'Authorization': `Bearer ${uploadSecret}` },
+    })
+    if (!resp.ok) return { ok: false, error: `HTTP ${resp.status}` }
+    const data = await resp.json() as { ok: boolean; files: string[]; label: string; expiresAt: number }
+    return data
+  } catch (err: unknown) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+})
+
+ipcMain.handle('fs:downloadAndSaveUpload', async (_e, token: string, filename: string) => {
+  const { workerUrl, uploadSecret } = workerAuth()
+  if (!uploadSecret) return { ok: false, error: 'Not configured.' }
+  const cfg = readConfig()
+  const req = (cfg.uploadRequests ?? {})[token]
+  if (!req) return { ok: false, error: 'Unknown upload request token.' }
+  try {
+    const resp = await fetch(`${workerUrl}/download-upload/${token}/${encodeURIComponent(filename)}`, {
+      headers: { 'Authorization': `Bearer ${uploadSecret}` },
+    })
+    if (!resp.ok) return { ok: false, error: `HTTP ${resp.status}` }
+    const buf = Buffer.from(await resp.arrayBuffer())
+    const dest = path.join(req.folderPath, filename)
+    fs.writeFileSync(dest, buf)
+    // Delete from R2 after saving
+    fetch(`${workerUrl}/delete-upload/${token}/${encodeURIComponent(filename)}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${uploadSecret}` },
+    }).catch(() => {})
+    return { ok: true, path: dest }
+  } catch (err: unknown) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+})
+
+ipcMain.handle('fs:revokeUploadRequest', async (_e, token: string) => {
+  const { workerUrl, uploadSecret } = workerAuth()
+  if (!uploadSecret) return { ok: false, error: 'Not configured.' }
+  try {
+    await fetch(`${workerUrl}/upload-request/${token}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${uploadSecret}` },
+    })
+    const cfg = readConfig()
+    const requests = { ...(cfg.uploadRequests ?? {}) }
+    delete requests[token]
+    const merged = { ...cfg, uploadRequests: requests }
+    fs.writeFileSync(configPath(), JSON.stringify(merged, null, 2), 'utf8')
+    return { ok: true }
+  } catch (err: unknown) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+})
+
 ipcMain.handle('fs:openExternal', (_e, url: string) => { shell.openExternal(url); return true })
 
 // Annotations: Z:\[Client]\Private\[subfolder__filename].json

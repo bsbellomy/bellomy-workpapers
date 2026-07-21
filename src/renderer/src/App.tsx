@@ -4,7 +4,7 @@ import {
   ChevronRight, ChevronDown, FileSignature, ZoomIn, ZoomOut, Maximize2,
   MessageSquare, PanelRightClose, PanelRightOpen, PanelLeftClose, PanelLeftOpen,
   Clock, Layers, Settings, ScanLine, ArrowLeft, Merge, Printer,
-  RefreshCw, Trash2, Calculator, FileSpreadsheet, StickyNote, Copy, CreditCard, RotateCw, Mail,
+  RefreshCw, Trash2, Calculator, FileSpreadsheet, StickyNote, Copy, CreditCard, RotateCw, Mail, Inbox,
 } from 'lucide-react'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -74,6 +74,11 @@ const api = (window as unknown as { electronAPI?: {
   getMagicLinkConfig: ()=>Promise<{workerUrl:string;hasUploadSecret:boolean}>
   sendMagicLinks: (items:{name:string;path?:string;bytes?:ArrayBuffer;pages?:string}[],expiresDays:number)=>Promise<{ok:boolean;error?:string;results?:{name:string;url?:string;error?:string}[]}>
   openExternal:   (url:string)=>Promise<boolean>
+  createUploadRequest:(label:string,instructions:string,expiresDays:number,folderPath:string)=>Promise<{ok:boolean;token?:string;url?:string;error?:string}>
+  listUploadRequests:()=>Promise<Record<string,{label:string;folderPath:string;url:string;createdAt:string;expiresDays:number}>>
+  checkUploads:(token:string)=>Promise<{ok:boolean;files?:string[];label?:string;expiresAt?:number;error?:string}>
+  downloadAndSaveUpload:(token:string,filename:string)=>Promise<{ok:boolean;path?:string;error?:string}>
+  revokeUploadRequest:(token:string)=>Promise<{ok:boolean;error?:string}>
   printFile:      (p:string)=>Promise<{ok:boolean;error?:string}>
   printBytes:     (b:ArrayBuffer)=>Promise<{ok:boolean;error?:string}>
   minimizeWindow: ()=>void
@@ -1737,6 +1742,187 @@ function EmailLinkModal({initialItems,clientFiles,author,onClose}:{initialItems:
   )
 }
 
+// ── Request Documents Modal ───────────────────────────────────────────────────
+
+function RequestUploadModal({folderPath,folderName,author,onClose,onCreated}:{folderPath:string;folderName:string;author:string;onClose:()=>void;onCreated:()=>void}){
+  const [label,setLabel]=useState(`Documents from ${folderName}`)
+  const [instructions,setInstructions]=useState('')
+  const [expiresDays,setExpiresDays]=useState(30)
+  const [creating,setCreating]=useState(false)
+  const [error,setError]=useState<string|null>(null)
+
+  async function handleCreate(){
+    setCreating(true); setError(null)
+    const r=await api?.createUploadRequest(label.trim()||folderName,instructions.trim(),expiresDays,folderPath)
+    setCreating(false)
+    if(!r?.ok){ setError(r?.error??'Could not create upload link.'); return }
+    const subject=`${author} has requested documents`
+    const body=[
+      `Hello,`,``,
+      `Please upload the requested documents using the secure link below:`,``,
+      r.url!,``,
+      `This link will expire in ${expiresDays} days.`,``,
+      `Thank you,`,
+    ].join('\n')
+    await api?.openExternal(`mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`)
+    onCreated()
+    onClose()
+  }
+
+  return(
+    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{backgroundColor:'rgba(26,22,18,0.4)'}} onClick={onClose}>
+      <div className="flex flex-col rounded overflow-hidden" style={{width:460,backgroundColor:C.paperLight,boxShadow:'0 8px 40px rgba(26,22,18,0.25)',border:`1px solid ${C.rule}`}} onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3" style={{backgroundColor:C.ink,color:C.paperLight}}>
+          <span className="serif" style={{fontSize:14,fontWeight:600}}>Request Documents from Client</span>
+          <button onClick={onClose} style={{color:C.inkFaint,fontSize:20,lineHeight:1}}>×</button>
+        </div>
+        <div className="p-5 flex flex-col gap-3">
+          <div>
+            <label className="sans" style={{fontSize:11,color:C.inkMuted,fontWeight:600,textTransform:'uppercase',letterSpacing:0.5}}>Destination folder</label>
+            <div className="mono mt-1" style={{fontSize:11,color:C.inkFaint,padding:'6px 10px',backgroundColor:C.paperDeep,borderRadius:4}}>{folderPath}</div>
+          </div>
+          <div>
+            <label className="sans" style={{fontSize:11,color:C.inkMuted,fontWeight:600,textTransform:'uppercase',letterSpacing:0.5}}>Request label</label>
+            <input className="w-full mt-1 px-3 py-2 rounded sans" style={{fontSize:13,border:`1px solid ${C.rule}`,backgroundColor:C.paper,color:C.ink}}
+              value={label} onChange={e=>setLabel(e.target.value)} placeholder="e.g. 2025 Tax Documents"/>
+          </div>
+          <div>
+            <label className="sans" style={{fontSize:11,color:C.inkMuted,fontWeight:600,textTransform:'uppercase',letterSpacing:0.5}}>Instructions to client <span style={{fontWeight:400,textTransform:'none'}}>(optional)</span></label>
+            <textarea className="w-full mt-1 px-3 py-2 rounded sans" rows={3} style={{fontSize:13,border:`1px solid ${C.rule}`,backgroundColor:C.paper,color:C.ink,resize:'vertical'}}
+              value={instructions} onChange={e=>setInstructions(e.target.value)} placeholder="e.g. Please upload your W-2s, 1099s, and any other income documents."/>
+          </div>
+          <div>
+            <label className="sans" style={{fontSize:11,color:C.inkMuted,fontWeight:600,textTransform:'uppercase',letterSpacing:0.5}}>Link expires after</label>
+            <select value={expiresDays} onChange={e=>setExpiresDays(Number(e.target.value))}
+              className="w-full mt-1 px-3 py-2 rounded sans" style={{fontSize:13,border:`1px solid ${C.rule}`,backgroundColor:C.paper}}>
+              <option value={7}>7 days</option>
+              <option value={14}>14 days</option>
+              <option value={30}>30 days</option>
+              <option value={60}>60 days</option>
+              <option value={90}>90 days</option>
+            </select>
+          </div>
+          <div style={{fontSize:11,color:C.inkFaint}}>Files uploaded by the client will be saved directly into the destination folder.</div>
+          {error&&<div style={{fontSize:12,color:'#B5443A'}}>{error}</div>}
+        </div>
+        <div className="px-5 py-3 flex justify-end gap-2" style={{borderTop:`1px solid ${C.rule}`,backgroundColor:C.paperDeep}}>
+          <button onClick={onClose} className="px-4 py-1.5 rounded sans" style={{fontSize:12,border:`1px solid ${C.rule}`,color:C.inkSoft,backgroundColor:C.paper}}>Cancel</button>
+          <button onClick={handleCreate} disabled={creating} className="px-4 py-1.5 rounded sans" style={{fontSize:12,backgroundColor:C.ochre,color:'#fff',fontWeight:600}}>{creating?'Creating…':'Create Link & Email'}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Upload Inbox Modal ────────────────────────────────────────────────────────
+
+function UploadInboxModal({onClose,onSaved}:{onClose:()=>void;onSaved:()=>void}){
+  type UploadRequest={label:string;folderPath:string;url:string;createdAt:string;expiresDays:number}
+  type PendingFile={token:string;filename:string;requestLabel:string}
+  const [requests,setRequests]=useState<Record<string,UploadRequest>>({})
+  const [pendingFiles,setPendingFiles]=useState<PendingFile[]>([])
+  const [saving,setSaving]=useState<Set<string>>(new Set())
+  const [loading,setLoading]=useState(true)
+
+  useEffect(()=>{
+    async function load(){
+      setLoading(true)
+      const reqs=await api?.listUploadRequests()??{}
+      setRequests(reqs)
+      const pending:PendingFile[]=[]
+      for(const [token,req] of Object.entries(reqs)){
+        const r=await api?.checkUploads(token)
+        if(r?.ok&&r.files) r.files.forEach(f=>pending.push({token,filename:f,requestLabel:req.label}))
+      }
+      setPendingFiles(pending)
+      setLoading(false)
+    }
+    load()
+  },[])
+
+  async function saveFile(pf:PendingFile){
+    setSaving(prev=>new Set(prev).add(pf.token+'/'+pf.filename))
+    const r=await api?.downloadAndSaveUpload(pf.token,pf.filename)
+    if(!r?.ok){ alert('Could not save file: '+(r?.error??'')); }
+    else{
+      setPendingFiles(prev=>prev.filter(x=>!(x.token===pf.token&&x.filename===pf.filename)))
+      onSaved()
+    }
+    setSaving(prev=>{const n=new Set(prev);n.delete(pf.token+'/'+pf.filename);return n})
+  }
+
+  async function revokeRequest(token:string){
+    if(!confirm('Revoke this upload link? The client will no longer be able to upload.')) return
+    await api?.revokeUploadRequest(token)
+    setRequests(prev=>{const n={...prev};delete n[token];return n})
+    setPendingFiles(prev=>prev.filter(x=>x.token!==token))
+  }
+
+  return(
+    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{backgroundColor:'rgba(26,22,18,0.4)'}} onClick={onClose}>
+      <div className="flex flex-col rounded overflow-hidden" style={{width:540,maxHeight:'80vh',backgroundColor:C.paperLight,boxShadow:'0 8px 40px rgba(26,22,18,0.25)',border:`1px solid ${C.rule}`}} onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3" style={{backgroundColor:C.ink,color:C.paperLight}}>
+          <span className="serif" style={{fontSize:14,fontWeight:600}}>Client Upload Inbox</span>
+          <button onClick={onClose} style={{color:C.inkFaint,fontSize:20,lineHeight:1}}>×</button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-5 flex flex-col gap-4">
+          {loading&&<div className="sans" style={{fontSize:13,color:C.inkFaint,textAlign:'center',padding:24}}>Checking for uploads…</div>}
+          {!loading&&pendingFiles.length>0&&(
+            <div>
+              <div className="sans mb-2" style={{fontSize:11,fontWeight:600,textTransform:'uppercase',letterSpacing:.5,color:C.inkMuted}}>Pending uploads</div>
+              <div className="flex flex-col gap-1">
+                {pendingFiles.map(pf=>{
+                  const key=pf.token+'/'+pf.filename
+                  const isSaving=saving.has(key)
+                  return(
+                    <div key={key} className="flex items-center gap-3 px-3 py-2 rounded" style={{backgroundColor:C.paperDeep,border:`1px solid ${C.rule}`}}>
+                      <div className="flex-1 min-w-0">
+                        <div className="sans truncate" style={{fontSize:13,color:C.ink,fontWeight:500}}>{pf.filename}</div>
+                        <div className="sans" style={{fontSize:11,color:C.inkFaint}}>{pf.requestLabel}</div>
+                      </div>
+                      <button onClick={()=>saveFile(pf)} disabled={isSaving}
+                        className="px-3 py-1 rounded sans" style={{fontSize:11,fontWeight:600,backgroundColor:C.ochre,color:'#fff',flexShrink:0}}>
+                        {isSaving?'Saving…':'Save to Folder'}
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+          {!loading&&pendingFiles.length===0&&<div className="sans" style={{fontSize:13,color:C.inkFaint,textAlign:'center',padding:16}}>No pending uploads.</div>}
+
+          {!loading&&Object.keys(requests).length>0&&(
+            <div>
+              <div className="sans mb-2" style={{fontSize:11,fontWeight:600,textTransform:'uppercase',letterSpacing:.5,color:C.inkMuted}}>Active upload links</div>
+              <div className="flex flex-col gap-1">
+                {Object.entries(requests).map(([token,req])=>{
+                  const expires=new Date(new Date(req.createdAt).getTime()+req.expiresDays*86400000)
+                  const expired=Date.now()>expires.getTime()
+                  return(
+                    <div key={token} className="flex items-center gap-3 px-3 py-2 rounded" style={{backgroundColor:C.paperDeep,border:`1px solid ${C.rule}`}}>
+                      <div className="flex-1 min-w-0">
+                        <div className="sans" style={{fontSize:13,color:C.ink,fontWeight:500}}>{req.label}</div>
+                        <div className="mono truncate" style={{fontSize:10,color:C.inkFaint}}>{req.folderPath}</div>
+                        <div className="sans" style={{fontSize:11,color:expired?'#B5443A':C.inkFaint}}>{expired?'Expired':'Expires'} {expires.toLocaleDateString()}</div>
+                      </div>
+                      <button onClick={()=>api?.openExternal(req.url)} className="px-2 py-1 rounded sans" style={{fontSize:11,border:`1px solid ${C.rule}`,color:C.inkSoft,backgroundColor:C.paper,flexShrink:0}}>Copy Link</button>
+                      <button onClick={()=>revokeRequest(token)} className="px-2 py-1 rounded sans" style={{fontSize:11,color:'#B5443A',flexShrink:0}}>Revoke</button>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="px-5 py-3 flex justify-end" style={{borderTop:`1px solid ${C.rule}`,backgroundColor:C.paperDeep}}>
+          <button onClick={onClose} className="px-4 py-1.5 rounded sans" style={{fontSize:12,border:`1px solid ${C.rule}`,color:C.inkSoft,backgroundColor:C.paper}}>Close</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 
 export default function App(){
@@ -2291,6 +2477,29 @@ export default function App(){
 
   const [showMagicLinkSettings,setShowMagicLinkSettings]=useState(false)
   const [emailModal,setEmailModal]=useState<{items:EmailItem[];clientFiles:DocFile[]}|null>(null)
+  const [uploadRequestModal,setUploadRequestModal]=useState<{folderPath:string;folderName:string}|null>(null)
+  const [uploadInboxModal,setUploadInboxModal]=useState(false)
+  type UploadRequest={label:string;folderPath:string;url:string;createdAt:string;expiresDays:number}
+  const [uploadRequests,setUploadRequests]=useState<Record<string,UploadRequest>>({})
+  const [uploadBadge,setUploadBadge]=useState(0)
+
+  // Poll for pending uploads every 2 minutes while the app is open
+  useEffect(()=>{
+    async function poll(){
+      const reqs=await api?.listUploadRequests()
+      if(!reqs) return
+      setUploadRequests(reqs)
+      let pending=0
+      for(const token of Object.keys(reqs)){
+        const r=await api?.checkUploads(token)
+        if(r?.ok&&r.files&&r.files.length>0) pending+=r.files.length
+      }
+      setUploadBadge(pending)
+    }
+    poll()
+    const id=setInterval(poll,120000)
+    return ()=>clearInterval(id)
+  },[api])
 
   async function emailCurrentFile(){
     if(!selectedFile) return
@@ -2880,6 +3089,11 @@ export default function App(){
             <button className="tool-btn" onClick={()=>setShowMagicLinkSettings(true)} title="Magic link settings" style={{color:C.inkFaint,padding:'5px 6px'}}>
               <Settings size={12}/>
             </button>
+            {/* Upload request inbox */}
+            <button className="tool-btn" onClick={()=>setUploadInboxModal(true)} title="Client upload inbox" style={{color:C.inkFaint,padding:'5px 6px',position:'relative'}}>
+              <Inbox size={13} style={{color:uploadBadge>0?C.ochre:C.inkFaint}}/>
+              {uploadBadge>0&&<span style={{position:'absolute',top:2,right:2,fontSize:8,fontWeight:700,color:'#fff',lineHeight:'12px',backgroundColor:'#B5443A',borderRadius:6,padding:'0 3px',minWidth:12,textAlign:'center'}}>{uploadBadge}</span>}
+            </button>
 
             <div style={{width:1,height:18,backgroundColor:C.rule,margin:'0 4px'}}/>
 
@@ -3354,6 +3568,10 @@ export default function App(){
             }}>
             🔧 <span>Test Folder Access</span>
           </button>
+          <button className="w-full text-left px-4 py-2.5 sans row-hover flex items-center gap-2" style={{fontSize:13,color:C.ink,borderTop:`1px solid ${C.ruleSoft}`}}
+            onClick={()=>{setUploadRequestModal({folderPath:ctxFolder.folder.path,folderName:ctxFolder.folder.name});setCtxFolder(null)}}>
+            📥 <span>Request Documents…</span>
+          </button>
         </div>
       )}
 
@@ -3412,6 +3630,26 @@ export default function App(){
 
       {showMagicLinkSettings&&(
         <MagicLinkSettingsModal onClose={()=>setShowMagicLinkSettings(false)}/>
+      )}
+
+      {uploadRequestModal&&(
+        <RequestUploadModal
+          folderPath={uploadRequestModal.folderPath}
+          folderName={uploadRequestModal.folderName}
+          author={author}
+          onClose={()=>setUploadRequestModal(null)}
+          onCreated={async()=>{
+            const reqs=await api?.listUploadRequests()??{}
+            setUploadRequests(reqs)
+          }}
+        />
+      )}
+
+      {uploadInboxModal&&(
+        <UploadInboxModal
+          onClose={()=>setUploadInboxModal(false)}
+          onSaved={()=>{ refreshDocsRef.current(300); setUploadBadge(b=>Math.max(0,b-1)) }}
+        />
       )}
 
       {emailModal&&(
