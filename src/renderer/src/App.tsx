@@ -132,7 +132,7 @@ function flatFolders(tree:(DocFile|DocFolder)[], out:DocFolder[]=[]):DocFolder[]
 
 interface BmBtn { id:string; label:string }
 
-function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onSaved:()=>void}){
+function EditFileModal({file,onClose,onSaved,bookmarkButtons,onBookmarkButtonsChange}:{file:DocFile;onClose:()=>void;onSaved:()=>void;bookmarkButtons:BmBtn[];onBookmarkButtonsChange:(btns:BmBtn[])=>void}){
   const [thumbs,setThumbs]           = useState<string[]>([])
   const [pageCount,setPageCount]     = useState(0)
   const [loading,setLoading]         = useState(true)
@@ -140,7 +140,7 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
   const [selPage,setSelPage]         = useState(0)
   const [assignments,setAssignments] = useState<Record<number,string>>({})
   const [customTitles,setCustomTitles] = useState<Record<number,string>>({})
-  const [buttons,setButtons]         = useState<BmBtn[]>([])
+  const buttons = bookmarkButtons
   const [newLabel,setNewLabel]       = useState('')
   const [saving,setSaving]           = useState(false)
   const [progress,setProgress]       = useState(0)
@@ -149,9 +149,8 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
   const pageListRef                  = useRef<HTMLDivElement|null>(null)
   const pageItemRefs                 = useRef<(HTMLDivElement|null)[]>([])
 
-  // Load buttons + thumbnail zoom from persistent config file on first open
+  // Load thumbnail zoom from persistent config file on first open
   useEffect(()=>{
-    api?.getConfig('bookmarkButtons').then(b=>{ if(Array.isArray(b)) setButtons(b as BmBtn[]) })
     api?.getConfig('editorThumbZoom').then(v=>{ if(typeof v==='number'&&v>0) setThumbZoom(v) })
   },[])
 
@@ -231,7 +230,7 @@ function EditFileModal({file,onClose,onSaved}:{file:DocFile;onClose:()=>void;onS
   },[file.path])
 
   function saveButtons(btns:BmBtn[]){
-    setButtons(btns)
+    onBookmarkButtonsChange(btns)
     api?.setConfig('bookmarkButtons',btns)
   }
 
@@ -2032,8 +2031,12 @@ export default function App(){
   const [appVersion,setAppVersion]=useState('')
   const [updateStatus,setUpdateStatus]=useState<{message:string;type:'info'|'success'|'error'}|null>(null)
   const [updateReady,setUpdateReady]=useState(false)
+  const [appBookmarkButtons,setAppBookmarkButtons]=useState<BmBtn[]>([])
   useEffect(()=>{ api?.getVersion().then(v=>setAppVersion(v)) },[api])
   useEffect(()=>{ api?.onUpdateDownloaded(()=>setUpdateReady(true)) },[api])
+  useEffect(()=>{
+    api?.getConfig('bookmarkButtons').then(b=>{ if(Array.isArray(b)) setAppBookmarkButtons(b as BmBtn[]) })
+  },[])
   useEffect(()=>{
     api?.getConfig('userName').then(v=>{
       if(typeof v==='string'&&v.trim()) setAuthorState(v.trim())
@@ -3625,7 +3628,7 @@ export default function App(){
 
       {/* ── Edit File modal ── */}
       {editFileModal&&(
-        <EditFileModal file={editFileModal} onClose={()=>setEditFileModal(null)} onSaved={()=>{
+        <EditFileModal file={editFileModal} bookmarkButtons={appBookmarkButtons} onBookmarkButtonsChange={btns=>{setAppBookmarkButtons(btns)}} onClose={()=>setEditFileModal(null)} onSaved={()=>{
           const p=editFileModal.path
           setFileBookmarks(prev=>{const n={...prev};delete n[p];return n})
           setExpandedBookmarks(prev=>{const n=new Set(prev);n.delete(p);return n})
