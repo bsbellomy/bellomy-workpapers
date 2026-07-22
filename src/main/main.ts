@@ -280,7 +280,56 @@ ipcMain.handle('fs:revokeUploadRequest', async (_e, token: string) => {
   }
 })
 
-ipcMain.handle('fs:openExternal', (_e, url: string) => { shell.openExternal(url); return true })
+// For mailto: links, detect which email client is currently running and launch it
+// directly rather than going through the Windows default-app registry, which may
+// point to the wrong Outlook version.
+async function openMailto(mailto: string): Promise<void> {
+  const { execSync } = await import('child_process')
+
+  // Known email clients in priority order. Classic Outlook is preferred over
+  // "olk.exe" (new Outlook) because the new version often isn't the user's choice.
+  const candidates = [
+    { exe: 'OUTLOOK.EXE' },   // Outlook Classic
+    { exe: 'thunderbird.exe' },
+    { exe: 'mailbird.exe' },
+    { exe: 'mailspring.exe' },
+  ]
+
+  let running: string | null = null
+  try {
+    const list = execSync('tasklist /FO CSV /NH', { encoding: 'utf8', timeout: 5000 })
+    for (const c of candidates) {
+      if (list.toLowerCase().includes(c.exe.toLowerCase())) { running = c.exe; break }
+    }
+  } catch { /* tasklist failed; fall through to shell.openExternal */ }
+
+  if (running) {
+    try {
+      // Get the full path so we're certain we're launching the running instance
+      const wmicOut = execSync(
+        `wmic process where "name='${running}'" get ExecutablePath /VALUE`,
+        { encoding: 'utf8', timeout: 5000 }
+      )
+      const match = wmicOut.match(/ExecutablePath=(.+)/i)
+      const exePath = match ? match[1].trim() : running
+      spawn(exePath, [mailto], { detached: true, stdio: 'ignore' }).unref()
+      return
+    } catch { /* wmic failed; try by name */ }
+    try {
+      spawn(running, [mailto], { detached: true, stdio: 'ignore' }).unref()
+      return
+    } catch { /* fall through */ }
+  }
+
+  // Fallback: let Windows pick via the registered default
+  shell.openExternal(mailto)
+}
+
+ipcMain.handle('fs:openExternal', (_e, url: string) => {
+  if (url.startsWith('mailto:')) openMailto(url).catch(() => shell.openExternal(url))
+  else shell.openExternal(url)
+  return true
+})
 
 // Annotations: Z:\[Client]\Private\[subfolder__filename].json
 function privateDir(pdfPath: string): string {
