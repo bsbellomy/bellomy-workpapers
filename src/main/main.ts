@@ -304,21 +304,22 @@ async function openMailto(mailto: string): Promise<void> {
   } catch { /* tasklist failed; fall through to shell.openExternal */ }
 
   if (running) {
+    let exePath = running
     try {
-      // Get the full path so we're certain we're launching the running instance
       const wmicOut = execSync(
         `wmic process where "name='${running}'" get ExecutablePath /VALUE`,
         { encoding: 'utf8', timeout: 5000 }
       )
       const match = wmicOut.match(/ExecutablePath=(.+)/i)
-      const exePath = match ? match[1].trim() : running
-      spawn(exePath, [mailto], { detached: true, stdio: 'ignore' }).unref()
-      return
-    } catch { /* wmic failed; try by name */ }
-    try {
-      spawn(running, [mailto], { detached: true, stdio: 'ignore' }).unref()
-      return
-    } catch { /* fall through */ }
+      if (match) exePath = match[1].trim()
+    } catch { /* wmic failed; use exe name and hope it resolves */ }
+
+    const child = spawn(exePath, [mailto], { detached: true, stdio: 'ignore', shell: false })
+    // If the exe isn't found or fails, fall back gracefully — do NOT let this
+    // become an uncaught exception that destabilises the main process.
+    child.on('error', () => shell.openExternal(mailto))
+    child.unref()
+    return
   }
 
   // Fallback: let Windows pick via the registered default
