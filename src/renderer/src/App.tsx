@@ -154,6 +154,19 @@ function EditFileModal({file,onClose,onSaved,bookmarkButtons,onBookmarkButtonsCh
     api?.getConfig('editorThumbZoom').then(v=>{ if(typeof v==='number'&&v>0) setThumbZoom(v) })
   },[])
 
+  // + key advances to next page without assigning
+  useEffect(()=>{
+    function onKey(e:KeyboardEvent){
+      if(e.key!=='+') return
+      const t=e.target as HTMLElement
+      if(t.tagName==='INPUT'||t.tagName==='TEXTAREA') return
+      e.preventDefault()
+      setSelPage(p=>Math.min(p+1,pageCount-1))
+    }
+    window.addEventListener('keydown',onKey)
+    return()=>window.removeEventListener('keydown',onKey)
+  },[pageCount])
+
   function changeThumbZoom(v:number){
     const clamped=Math.max(80,Math.min(900,v))
     setThumbZoom(clamped)
@@ -256,51 +269,34 @@ function EditFileModal({file,onClose,onSaved,bookmarkButtons,onBookmarkButtonsCh
       if(!bytes) throw new Error('Could not read file')
       setProgress(20)
 
-      // ── Pass 1: reorder pages only, save to clean bytes ──────────────────────
+      // ── Pass 1: copy pages in original order to clean bytes ─────────────────
       const srcDoc=await PDFDocument.load(bytes)
       const n=srcDoc.getPageCount()
-
-      const assigned:number[]=[]
-      for(const btn of buttons){
-        for(let i=0;i<n;i++) if(assignments[i]===btn.id&&!assigned.includes(i)) assigned.push(i)
-      }
-      const unassigned=Array.from({length:n},(_,i)=>i).filter(i=>!assigned.includes(i))
-      const order=[...assigned,...unassigned]
-
       setProgress(35)
       const doc1=await PDFDocument.create()
-      const copiedPages=await doc1.copyPages(srcDoc,order)
+      const copiedPages=await doc1.copyPages(srcDoc,Array.from({length:n},(_,i)=>i))
       copiedPages.forEach(p=>doc1.addPage(p))
       setProgress(55)
       const cleanBytes=await doc1.save({useObjectStreams:false})
       setProgress(65)
 
-      // ── Pass 2: load clean bytes, add outline, save final ────────────────────
-      const newAssign:Record<number,string>={}
-      const newCustomTitles:Record<number,string>={}
-      order.forEach((origIdx,newIdx)=>{
-        if(assignments[origIdx]) newAssign[newIdx]=assignments[origIdx]
-        if(customTitles[origIdx]!==undefined) newCustomTitles[newIdx]=customTitles[origIdx]
-      })
-      // Build bookmark groups: one parent per button (children = each grouped page),
-      // plus a standalone top-level entry for any page promoted via the "P" control.
-      interface BmGroup { title:string; pages:number[] }
-      const bmGroups:BmGroup[]=[]
-      for(let pg=0;pg<order.length;pg++){
-        if(newAssign[pg]&&newCustomTitles[pg]!==undefined){
-          const title=newCustomTitles[pg]||buttons.find(b=>b.id===newAssign[pg])?.label||'Bookmark'
-          bmGroups.push({title,pages:[pg]})
+      // ── Pass 2: build outline and save final ─────────────────────────────────
+      // Every assigned page → top-level bookmark.
+      // Every unassigned page → child of the most recent top-level.
+      // Pages before the first assignment are left untagged.
+      interface TopEntry { title:string; pageIdx:number; children:{pageIdx:number}[] }
+      const topEntries:TopEntry[]=[]
+      for(let pg=0;pg<n;pg++){
+        if(assignments[pg]){
+          const label=customTitles[pg]||buttons.find(b=>b.id===assignments[pg])?.label||'Bookmark'
+          topEntries.push({title:label,pageIdx:pg,children:[]})
+        } else if(topEntries.length>0){
+          topEntries[topEntries.length-1].children.push({pageIdx:pg})
         }
       }
-      for(const btn of buttons){
-        const pages:number[]=[]
-        for(let pg=0;pg<order.length;pg++) if(newAssign[pg]===btn.id&&newCustomTitles[pg]===undefined) pages.push(pg)
-        if(pages.length>0) bmGroups.push({title:btn.label,pages})
-      }
-      bmGroups.sort((a,b)=>a.pages[0]-b.pages[0]) // keep TOC in document order
 
       let finalBytes=cleanBytes
-      if(bmGroups.length>0){
+      if(topEntries.length>0){
         try{
           const doc2=await PDFDocument.load(cleanBytes)
           const ctx=doc2.context
@@ -313,51 +309,47 @@ function EditFileModal({file,onClose,onSaved,bookmarkButtons,onBookmarkButtonsCh
             return d
           }
 
-          // Create parent refs (one per button group)
-          const parentRefs=bmGroups.map(g=>{
+          const parentRefs=topEntries.map(e=>{
             const d=PDFDict.withContext(ctx)
-            d.set(PDFName.of('Title'),PDFHexString.fromText(g.title))
-            d.set(PDFName.of('Dest'),makeDest(g.pages[0]))
+            d.set(PDFName.of('Title'),PDFHexString.fromText(e.title))
+            d.set(PDFName.of('Dest'),makeDest(e.pageIdx))
             return ctx.register(d)
           })
 
-          // Create children for groups with >1 page
-          const childRefsByGroup=bmGroups.map((g,gi)=>{
-            if(g.pages.length<=1) return null
-            const refs=g.pages.map((pageIdx,i)=>{
+          const childRefsByEntry=topEntries.map((e,ei)=>{
+            if(e.children.length===0) return null
+            const refs=e.children.map(ch=>{
               const d=PDFDict.withContext(ctx)
-              d.set(PDFName.of('Title'),PDFHexString.fromText(`Page ${i+1}`))
-              d.set(PDFName.of('Dest'),makeDest(pageIdx))
+              d.set(PDFName.of('Title'),PDFHexString.fromText(`Page ${ch.pageIdx+1}`))
+              d.set(PDFName.of('Dest'),makeDest(ch.pageIdx))
               return ctx.register(d)
             })
             refs.forEach((ref,i)=>{
               const d=ctx.lookup(ref) as PDFDict
-              d.set(PDFName.of('Parent'),parentRefs[gi])
+              d.set(PDFName.of('Parent'),parentRefs[ei])
               if(i>0) d.set(PDFName.of('Prev'),refs[i-1])
               if(i<refs.length-1) d.set(PDFName.of('Next'),refs[i+1])
             })
             return refs
           })
 
-          // Wire parent First/Last/Count for groups with children
-          parentRefs.forEach((pRef,gi)=>{
+          parentRefs.forEach((pRef,ei)=>{
             const pd=ctx.lookup(pRef) as PDFDict
-            const ch=childRefsByGroup[gi]
+            const ch=childRefsByEntry[ei]
             if(ch&&ch.length>0){
               pd.set(PDFName.of('First'),ch[0])
               pd.set(PDFName.of('Last'),ch[ch.length-1])
-              pd.set(PDFName.of('Count'),PDFNumber.of(-ch.length)) // negative = collapsed by default
+              pd.set(PDFName.of('Count'),PDFNumber.of(-ch.length))
             }
           })
 
-          // Wire parent Prev/Next chain
           parentRefs.forEach((ref,i)=>{
             const d=ctx.lookup(ref) as PDFDict
             if(i>0) d.set(PDFName.of('Prev'),parentRefs[i-1])
             if(i<parentRefs.length-1) d.set(PDFName.of('Next'),parentRefs[i+1])
           })
 
-          const totalVisible=bmGroups.reduce((s,g)=>s+(g.pages.length<=1?1:1+g.pages.length),0)
+          const totalVisible=topEntries.reduce((s,_e,ei)=>s+1+(childRefsByEntry[ei]?.length??0),0)
           const rootDict=PDFDict.withContext(ctx)
           rootDict.set(PDFName.of('Type'),PDFName.of('Outlines'))
           rootDict.set(PDFName.of('First'),parentRefs[0])
@@ -472,14 +464,6 @@ function EditFileModal({file,onClose,onSaved,bookmarkButtons,onBookmarkButtonsCh
                       setAssignments(p=>({...p,[selPage]:btn.id}))
                       setSelPage(p=>Math.min(p+1,pageCount-1))
                     }}
-                    onContextMenu={e=>{
-                      e.preventDefault()
-                      const title=window.prompt('Promote & rename — enter a title for this page:',btn.label)
-                      if(title===null) return
-                      setAssignments(p=>({...p,[selPage]:btn.id}))
-                      if(title.trim()) setCustomTitles(p=>({...p,[selPage]:title.trim()}))
-                      setSelPage(p=>Math.min(p+1,pageCount-1))
-                    }}
                     className="flex-1 text-left rounded px-3 py-2 sans"
                     style={{fontSize:12,backgroundColor:C.ochreSoft,color:C.ochreDeep,border:`1px solid ${C.ochreLight}`,fontWeight:600}}>
                     {btn.label}
@@ -489,6 +473,9 @@ function EditFileModal({file,onClose,onSaved,bookmarkButtons,onBookmarkButtonsCh
                   <button onClick={()=>saveButtons(buttons.filter((_,j)=>j!==i))} style={{color:'#B5443A',padding:'0 2px'}}><X size={11}/></button>
                 </div>
               ))}
+            </div>
+            <div className="px-3 pb-1 flex-shrink-0" style={{borderTop:`1px solid ${C.ruleSoft}`,paddingTop:6}}>
+              <span className="sans" style={{fontSize:10,color:C.inkFaint}}>Click = top-level bookmark &nbsp;·&nbsp; <kbd style={{fontFamily:'monospace',fontSize:10}}>+</kbd> = advance without tagging</span>
             </div>
             <div className="p-3 flex-shrink-0" style={{borderTop:`1px solid ${C.ruleSoft}`}}>
               <div className="flex gap-1 mb-2">
