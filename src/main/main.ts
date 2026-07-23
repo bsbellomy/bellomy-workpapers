@@ -491,13 +491,18 @@ ipcMain.handle('fs:combineFiles', async (_e, topPath: string, bottomPath: string
     const bottomPages = await merged.copyPages(bottomDoc, bottomDoc.getPageIndices())
     topPages.forEach(p => merged.addPage(p))
     bottomPages.forEach(p => merged.addPage(p))
+    const expectedPages = topDoc.getPageCount() + bottomDoc.getPageCount()
     const mergedBytes = await merged.save()
 
-    // Write to temp file — originals stay untouched until new file is confirmed on disk
+    // Write to temp file — originals stay untouched until new file is verified
     fs.writeFileSync(tmpPath, mergedBytes)
-    if (fs.statSync(tmpPath).size < 100) throw new Error('Merged file appears empty')
 
-    // New file confirmed — delete originals then rename temp into place
+    // Read back and verify page count matches both source documents combined
+    const verify = await PDFDocument.load(fs.readFileSync(tmpPath))
+    if (verify.getPageCount() !== expectedPages)
+      throw new Error(`Merge verification failed: expected ${expectedPages} pages, got ${verify.getPageCount()}`)
+
+    // Verified — delete originals then rename temp into place
     fs.unlinkSync(topPath)
     fs.unlinkSync(bottomPath)
     try { const ann = annFile(bottomPath); if (fs.existsSync(ann)) fs.unlinkSync(ann) } catch {}
