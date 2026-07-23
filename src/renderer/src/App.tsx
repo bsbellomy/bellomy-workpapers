@@ -2558,16 +2558,22 @@ export default function App(){
     }
   }
 
+  const [combining,setCombining]=useState(false)
   async function handleCombine(){
     if(!api||!selectedFile||!fileAbove) return
     const ok=window.confirm(`Combine:\n  ${fileAbove.name}\n+ ${selectedFile.name}\n\nThe top file will contain both documents. The bottom file will be deleted.`)
     if(!ok) return
-    const result=await api.combineFiles(fileAbove.path,selectedFile.path)
-    if(result.ok){
-      setSelectedFile(null); setPdfBytes(null)
-      refreshDocs(500)
-    } else {
-      alert(result.error??'Combine failed')
+    setCombining(true)
+    try{
+      const result=await api.combineFiles(fileAbove.path,selectedFile.path)
+      if(result.ok){
+        setSelectedFile(null); setPdfBytes(null)
+        refreshDocs(500)
+      } else {
+        alert(result.error??'Combine failed')
+      }
+    }finally{
+      setCombining(false)
     }
   }
 
@@ -3109,12 +3115,13 @@ export default function App(){
             {/* Combine with file above */}
             <button
               className="tool-btn sans"
-              style={{color:fileAbove?C.inkSoft:'#bbb'}}
-              disabled={!fileAbove}
+              style={{color:fileAbove&&!combining?C.inkSoft:'#bbb'}}
+              disabled={!fileAbove||combining}
               onClick={handleCombine}
               title={fileAbove?`Combine with: ${fileAbove.name}`:'Select a file to enable'}
             >
-              <Merge size={14} style={{color:fileAbove?C.ochre:'#bbb'}}/> Combine with Above
+              <Merge size={14} style={{color:fileAbove&&!combining?C.ochre:'#bbb'}}/>
+              {combining?'Combining…':'Combine with Above'}
             </button>
 
             <div className="flex-1"/>

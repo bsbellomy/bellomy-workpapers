@@ -479,6 +479,7 @@ ipcMain.handle('fs:getAnnotations', async (_e, pdfPath: string) => {
 
 // ── Combine two PDFs (merge fileAbove + selectedFile → overwrite fileAbove) ───
 ipcMain.handle('fs:combineFiles', async (_e, topPath: string, bottomPath: string) => {
+  const tmpPath = topPath + '.combining.tmp'
   try {
     const { PDFDocument } = await import('pdf-lib')
     const topBytes    = fs.readFileSync(topPath)
@@ -491,12 +492,20 @@ ipcMain.handle('fs:combineFiles', async (_e, topPath: string, bottomPath: string
     topPages.forEach(p => merged.addPage(p))
     bottomPages.forEach(p => merged.addPage(p))
     const mergedBytes = await merged.save()
-    fs.writeFileSync(topPath, mergedBytes)
-    // Remove the bottom file and its annotation
+
+    // Write to temp file — originals stay untouched until new file is confirmed on disk
+    fs.writeFileSync(tmpPath, mergedBytes)
+    if (fs.statSync(tmpPath).size < 100) throw new Error('Merged file appears empty')
+
+    // New file confirmed — delete originals then rename temp into place
+    fs.unlinkSync(topPath)
     fs.unlinkSync(bottomPath)
     try { const ann = annFile(bottomPath); if (fs.existsSync(ann)) fs.unlinkSync(ann) } catch {}
+    fs.renameSync(tmpPath, topPath)
+
     return { ok: true }
   } catch (e: unknown) {
+    try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath) } catch {}
     return { ok: false, error: String(e) }
   }
 })
