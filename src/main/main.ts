@@ -428,8 +428,24 @@ autoUpdater.on('update-downloaded', () => {
   mainWin?.webContents.send('update:downloaded')
 })
 
-app.whenReady().then(() => {
+const TAXDOME_EXE = 'C:\\Program Files (x86)\\TaxDome\\TaxDome.exe'
+
+async function ensureTaxDomeRunning(): Promise<void> {
+  try {
+    if (!fs.existsSync(TAXDOME_EXE)) return // not installed on this machine
+    const { execSync: exec } = await import('child_process')
+    const list = exec('tasklist /FI "IMAGENAME eq TaxDome.exe" /FO CSV /NH', { encoding: 'utf8', timeout: 5000 })
+    if (list.toLowerCase().includes('taxdome.exe')) return // already running
+    const child = spawn(TAXDOME_EXE, [], { detached: true, stdio: 'ignore' })
+    child.on('error', () => {})
+    child.unref()
+    await new Promise(resolve => setTimeout(resolve, 4000)) // wait for drive to mount
+  } catch { /* never block app startup */ }
+}
+
+app.whenReady().then(async () => {
   cleanScanInbox() // purge any leftover files from previous session
+  await ensureTaxDomeRunning()
   createWindow()
   if (!isDev) autoUpdater.checkForUpdatesAndNotify()
 })
