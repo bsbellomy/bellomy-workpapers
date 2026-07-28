@@ -286,43 +286,46 @@ ipcMain.handle('fs:revokeUploadRequest', async (_e, token: string) => {
 async function openMailto(mailto: string): Promise<void> {
   const { execSync } = await import('child_process')
 
-  // Known email clients in priority order. Classic Outlook is preferred over
-  // "olk.exe" (new Outlook) because the new version often isn't the user's choice.
-  const candidates = [
-    { exe: 'OUTLOOK.EXE' },   // Outlook Classic
-    { exe: 'thunderbird.exe' },
-    { exe: 'mailbird.exe' },
-    { exe: 'mailspring.exe' },
-  ]
-
-  let running: string | null = null
+  let exePath: string | null = null
   try {
-    const list = execSync('tasklist /FO CSV /NH', { encoding: 'utf8', timeout: 5000 })
-    for (const c of candidates) {
-      if (list.toLowerCase().includes(c.exe.toLowerCase())) { running = c.exe; break }
-    }
-  } catch { /* tasklist failed; fall through to shell.openExternal */ }
+    const list = execSync('tasklist /FO CSV /NH', { encoding: 'utf8', timeout: 5000 }).toLowerCase()
 
-  if (running) {
-    let exePath = running
-    try {
+    if (list.includes('outlook.exe')) {
+      // Both Classic and New Outlook can appear as OUTLOOK.EXE — get all paths and
+      // prefer the one in the Microsoft Office directory (Classic) over WindowsApps (New).
       const wmicOut = execSync(
-        `wmic process where "name='${running}'" get ExecutablePath /VALUE`,
+        `wmic process where "name='OUTLOOK.EXE'" get ExecutablePath /VALUE`,
         { encoding: 'utf8', timeout: 5000 }
       )
-      const match = wmicOut.match(/ExecutablePath=(.+)/i)
-      if (match) exePath = match[1].trim()
-    } catch { /* wmic failed; use exe name and hope it resolves */ }
+      const paths = [...wmicOut.matchAll(/ExecutablePath=(.+)/gi)]
+        .map(m => m[1].trim()).filter(p => p.length > 0)
+      exePath =
+        paths.find(p => /\\microsoft office\\/i.test(p)) ??   // Classic: ...Microsoft Office\...
+        paths.find(p => /\\office1\d\\/i.test(p)) ??          // Classic: ...Office16\...
+        paths.find(p => !/windowsapps/i.test(p)) ??           // anything not in WindowsApps
+        paths[0] ?? null
+    } else {
+      // Fall back to other supported clients
+      for (const exe of ['thunderbird.exe', 'mailbird.exe', 'mailspring.exe']) {
+        if (list.includes(exe)) {
+          const wmicOut = execSync(
+            `wmic process where "name='${exe}'" get ExecutablePath /VALUE`,
+            { encoding: 'utf8', timeout: 5000 }
+          )
+          const match = wmicOut.match(/ExecutablePath=(.+)/i)
+          if (match) { exePath = match[1].trim(); break }
+        }
+      }
+    }
+  } catch { /* detection failed; fall through to shell.openExternal */ }
 
+  if (exePath) {
     const child = spawn(exePath, [mailto], { detached: true, stdio: 'ignore', shell: false })
-    // If the exe isn't found or fails, fall back gracefully — do NOT let this
-    // become an uncaught exception that destabilises the main process.
     child.on('error', () => shell.openExternal(mailto))
     child.unref()
     return
   }
 
-  // Fallback: let Windows pick via the registered default
   shell.openExternal(mailto)
 }
 
