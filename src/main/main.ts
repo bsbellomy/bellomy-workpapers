@@ -320,7 +320,13 @@ async function openMailto(mailto: string): Promise<void> {
   } catch { /* detection failed; fall through to shell.openExternal */ }
 
   if (exePath) {
-    const child = spawn(exePath, [mailto], { detached: true, stdio: 'ignore', shell: false })
+    // Use /c IPM.Note /m to open a compose window directly in Classic Outlook,
+    // bypassing the Windows mailto: protocol handler (which may point to New Outlook).
+    const isClassicOutlook = /\\microsoft office\\|\\office1\d\\/i.test(exePath)
+    const args = isClassicOutlook
+      ? ['/c', 'IPM.Note', '/m', mailto.replace(/^mailto:/i, '')]
+      : [mailto]
+    const child = spawn(exePath, args, { detached: true, stdio: 'ignore', shell: false })
     child.on('error', () => shell.openExternal(mailto))
     child.unref()
     return
