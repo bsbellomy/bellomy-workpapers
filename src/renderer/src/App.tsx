@@ -269,31 +269,49 @@ function EditFileModal({file,onClose,onSaved,bookmarkButtons,onBookmarkButtonsCh
       if(!bytes) throw new Error('Could not read file')
       setProgress(20)
 
-      // ── Pass 1: copy pages in original order to clean bytes ─────────────────
+      // ── Pass 1: reorder pages by button list order, then build clean bytes ──────
+      // Walk document order to collect groups: each assigned page starts a group,
+      // subsequent unassigned pages are its children. Then sort groups by button
+      // list order so the PDF TOC matches the button panel order.
       const srcDoc=await PDFDocument.load(bytes)
       const n=srcDoc.getPageCount()
+
+      interface Group { buttonId:string; pageIdx:number; children:number[] }
+      const groups:Group[]=[]
+      const prefix:number[]=[] // pages before the first assignment (left untagged)
+      for(let pg=0;pg<n;pg++){
+        if(assignments[pg]){
+          groups.push({buttonId:assignments[pg],pageIdx:pg,children:[]})
+        } else if(groups.length>0){
+          groups[groups.length-1].children.push(pg)
+        } else {
+          prefix.push(pg)
+        }
+      }
+      const btnOrder=new Map(buttons.map((b,i)=>[b.id,i]))
+      groups.sort((a,b)=>{
+        const oa=btnOrder.get(a.buttonId)??999
+        const ob=btnOrder.get(b.buttonId)??999
+        return oa!==ob ? oa-ob : a.pageIdx-b.pageIdx
+      })
+      const order=[...prefix,...groups.flatMap(g=>[g.pageIdx,...g.children])]
+
       setProgress(35)
       const doc1=await PDFDocument.create()
-      const copiedPages=await doc1.copyPages(srcDoc,Array.from({length:n},(_,i)=>i))
+      const copiedPages=await doc1.copyPages(srcDoc,order)
       copiedPages.forEach(p=>doc1.addPage(p))
       setProgress(55)
       const cleanBytes=await doc1.save({useObjectStreams:false})
       setProgress(65)
 
-      // ── Pass 2: build outline and save final ─────────────────────────────────
-      // Every assigned page → top-level bookmark.
-      // Every unassigned page → child of the most recent top-level.
-      // Pages before the first assignment are left untagged.
+      // ── Pass 2: build outline in button-list order and save final ────────────
+      const newIdxMap=new Map(order.map((origIdx,newIdx)=>[origIdx,newIdx]))
       interface TopEntry { title:string; pageIdx:number; children:{pageIdx:number}[] }
-      const topEntries:TopEntry[]=[]
-      for(let pg=0;pg<n;pg++){
-        if(assignments[pg]){
-          const label=customTitles[pg]||buttons.find(b=>b.id===assignments[pg])?.label||'Bookmark'
-          topEntries.push({title:label,pageIdx:pg,children:[]})
-        } else if(topEntries.length>0){
-          topEntries[topEntries.length-1].children.push({pageIdx:pg})
-        }
-      }
+      const topEntries:TopEntry[]=groups.map(g=>({
+        title:customTitles[g.pageIdx]||buttons.find(b=>b.id===g.buttonId)?.label||'Bookmark',
+        pageIdx:newIdxMap.get(g.pageIdx)!,
+        children:g.children.map(ci=>({pageIdx:newIdxMap.get(ci)!}))
+      }))
 
       let finalBytes=cleanBytes
       if(topEntries.length>0){
