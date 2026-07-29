@@ -1865,62 +1865,78 @@ function UploadInboxModal({onClose,onSaved}:{onClose:()=>void;onSaved:()=>void})
     setPendingFiles(prev=>prev.filter(x=>x.token!==token))
   }
 
+  // Group pending files by token so they can't mix between clients
+  const filesByToken=Object.keys(requests).reduce<Record<string,PendingFile[]>>((acc,token)=>{
+    acc[token]=pendingFiles.filter(pf=>pf.token===token)
+    return acc
+  },{})
+
+  async function saveAll(token:string){
+    for(const pf of filesByToken[token]??[]) await saveFile(pf)
+  }
+
   return(
     <div className="fixed inset-0 z-50 flex items-center justify-center" style={{backgroundColor:'rgba(26,22,18,0.4)'}} onClick={onClose}>
-      <div className="flex flex-col rounded overflow-hidden" style={{width:540,maxHeight:'80vh',backgroundColor:C.paperLight,boxShadow:'0 8px 40px rgba(26,22,18,0.25)',border:`1px solid ${C.rule}`}} onClick={e=>e.stopPropagation()}>
+      <div className="flex flex-col rounded overflow-hidden" style={{width:580,maxHeight:'85vh',backgroundColor:C.paperLight,boxShadow:'0 8px 40px rgba(26,22,18,0.25)',border:`1px solid ${C.rule}`}} onClick={e=>e.stopPropagation()}>
         <div className="flex items-center justify-between px-5 py-3" style={{backgroundColor:C.ink,color:C.paperLight}}>
           <span className="serif" style={{fontSize:14,fontWeight:600}}>Client Upload Inbox</span>
           <button onClick={onClose} style={{color:C.inkFaint,fontSize:20,lineHeight:1}}>×</button>
         </div>
-        <div className="flex-1 overflow-y-auto p-5 flex flex-col gap-4">
+        <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
           {loading&&<div className="sans" style={{fontSize:13,color:C.inkFaint,textAlign:'center',padding:24}}>Checking for uploads…</div>}
-          {!loading&&pendingFiles.length>0&&(
-            <div>
-              <div className="sans mb-2" style={{fontSize:11,fontWeight:600,textTransform:'uppercase',letterSpacing:.5,color:C.inkMuted}}>Pending uploads</div>
-              <div className="flex flex-col gap-1">
-                {pendingFiles.map(pf=>{
-                  const key=pf.token+'/'+pf.filename
-                  const isSaving=saving.has(key)
-                  return(
-                    <div key={key} className="flex items-center gap-3 px-3 py-2 rounded" style={{backgroundColor:C.paperDeep,border:`1px solid ${C.rule}`}}>
-                      <div className="flex-1 min-w-0">
-                        <div className="sans truncate" style={{fontSize:13,color:C.ink,fontWeight:500}}>{pf.filename}</div>
-                        <div className="sans" style={{fontSize:11,color:C.inkFaint}}>{pf.requestLabel}</div>
-                      </div>
-                      <button onClick={()=>saveFile(pf)} disabled={isSaving}
-                        className="px-3 py-1 rounded sans" style={{fontSize:11,fontWeight:600,backgroundColor:C.ochre,color:'#fff',flexShrink:0}}>
-                        {isSaving?'Saving…':'Save to Folder'}
-                      </button>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-          )}
-          {!loading&&pendingFiles.length===0&&<div className="sans" style={{fontSize:13,color:C.inkFaint,textAlign:'center',padding:16}}>No pending uploads.</div>}
+          {!loading&&Object.keys(requests).length===0&&<div className="sans" style={{fontSize:13,color:C.inkFaint,textAlign:'center',padding:16}}>No active upload links.</div>}
 
-          {!loading&&Object.keys(requests).length>0&&(
-            <div>
-              <div className="sans mb-2" style={{fontSize:11,fontWeight:600,textTransform:'uppercase',letterSpacing:.5,color:C.inkMuted}}>Active upload links</div>
-              <div className="flex flex-col gap-1">
-                {Object.entries(requests).map(([token,req])=>{
-                  const expires=new Date(new Date(req.createdAt).getTime()+req.expiresDays*86400000)
-                  const expired=Date.now()>expires.getTime()
-                  return(
-                    <div key={token} className="flex items-center gap-3 px-3 py-2 rounded" style={{backgroundColor:C.paperDeep,border:`1px solid ${C.rule}`}}>
-                      <div className="flex-1 min-w-0">
-                        <div className="sans" style={{fontSize:13,color:C.ink,fontWeight:500}}>{req.label}</div>
-                        <div className="mono truncate" style={{fontSize:10,color:C.inkFaint}}>{req.folderPath}</div>
-                        <div className="sans" style={{fontSize:11,color:expired?'#B5443A':C.inkFaint}}>{expired?'Expired':'Expires'} {expires.toLocaleDateString()}</div>
-                      </div>
-                      <button onClick={()=>api?.openExternal(req.url)} className="px-2 py-1 rounded sans" style={{fontSize:11,border:`1px solid ${C.rule}`,color:C.inkSoft,backgroundColor:C.paper,flexShrink:0}}>Copy Link</button>
-                      <button onClick={()=>revokeRequest(token)} className="px-2 py-1 rounded sans" style={{fontSize:11,color:'#B5443A',flexShrink:0}}>Revoke</button>
-                    </div>
-                  )
-                })}
+          {!loading&&Object.entries(requests).map(([token,req])=>{
+            const files=filesByToken[token]??[]
+            const expires=new Date(new Date(req.createdAt).getTime()+req.expiresDays*86400000)
+            const expired=Date.now()>expires.getTime()
+            const allSaving=files.every(pf=>saving.has(pf.token+'/'+pf.filename))
+            return(
+              <div key={token} style={{border:`2px solid ${files.length>0?C.ochreLight:C.rule}`,borderRadius:8,overflow:'hidden'}}>
+                {/* Request header */}
+                <div className="px-4 py-3 flex items-center gap-3" style={{backgroundColor:files.length>0?C.ochreSoft:C.paperDeep}}>
+                  <div className="flex-1 min-w-0">
+                    <div className="sans" style={{fontSize:13,fontWeight:700,color:C.ink}}>{req.label}</div>
+                    <div className="mono truncate" style={{fontSize:10,color:C.inkFaint,marginTop:1}}>→ {req.folderPath}</div>
+                    <div className="sans" style={{fontSize:11,color:expired?'#B5443A':C.inkFaint,marginTop:1}}>{expired?'Expired':'Expires'} {expires.toLocaleDateString()}</div>
+                  </div>
+                  <div className="flex gap-1 flex-shrink-0">
+                    {files.length>0&&(
+                      <button onClick={()=>saveAll(token)} disabled={allSaving}
+                        className="px-3 py-1.5 rounded sans" style={{fontSize:11,fontWeight:700,backgroundColor:C.ochre,color:'#fff'}}>
+                        {allSaving?'Saving…':`Save All (${files.length})`}
+                      </button>
+                    )}
+                    <button onClick={()=>api?.openExternal(req.url)} className="px-2 py-1 rounded sans" style={{fontSize:11,border:`1px solid ${C.rule}`,color:C.inkSoft,backgroundColor:C.paper}}>Link</button>
+                    <button onClick={()=>revokeRequest(token)} className="px-2 py-1 rounded sans" style={{fontSize:11,color:'#B5443A',border:`1px solid #B5443A22`,backgroundColor:C.paper}}>Revoke</button>
+                  </div>
+                </div>
+                {/* Pending files for this request only */}
+                {files.length>0&&(
+                  <div className="flex flex-col" style={{borderTop:`1px solid ${C.ochreLight}`}}>
+                    {files.map(pf=>{
+                      const key=pf.token+'/'+pf.filename
+                      const isSaving=saving.has(key)
+                      return(
+                        <div key={key} className="flex items-center gap-3 px-4 py-2" style={{borderBottom:`1px solid ${C.ruleSoft}`,backgroundColor:C.paper}}>
+                          <div className="flex-1 min-w-0">
+                            <div className="sans truncate" style={{fontSize:12,color:C.ink}}>{pf.filename}</div>
+                          </div>
+                          <button onClick={()=>saveFile(pf)} disabled={isSaving}
+                            className="px-3 py-1 rounded sans" style={{fontSize:11,fontWeight:600,backgroundColor:isSaving?C.paperDeep:C.ink,color:isSaving?C.inkFaint:C.paperLight,flexShrink:0}}>
+                            {isSaving?'Saving…':'Save'}
+                          </button>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+                {files.length===0&&!expired&&(
+                  <div className="px-4 py-2 sans" style={{fontSize:11,color:C.inkFaint,backgroundColor:C.paper,borderTop:`1px solid ${C.rule}`}}>No files received yet.</div>
+                )}
               </div>
-            </div>
-          )}
+            )
+          })}
         </div>
         <div className="px-5 py-3 flex justify-end" style={{borderTop:`1px solid ${C.rule}`,backgroundColor:C.paperDeep}}>
           <button onClick={onClose} className="px-4 py-1.5 rounded sans" style={{fontSize:12,border:`1px solid ${C.rule}`,color:C.inkSoft,backgroundColor:C.paper}}>Close</button>
@@ -2498,6 +2514,8 @@ export default function App(){
   type UploadRequest={label:string;folderPath:string;url:string;createdAt:string;expiresDays:number}
   const [uploadRequests,setUploadRequests]=useState<Record<string,UploadRequest>>({})
   const [uploadBadge,setUploadBadge]=useState(0)
+  const [uploadToast,setUploadToast]=useState<string|null>(null)
+  const prevBadgeRef=useRef(0)
 
   // Poll for pending uploads every 2 minutes while the app is open
   useEffect(()=>{
@@ -2506,10 +2524,23 @@ export default function App(){
       if(!reqs) return
       setUploadRequests(reqs)
       let pending=0
-      for(const token of Object.keys(reqs)){
+      const newLabels:string[]=[]
+      for(const [token,req] of Object.entries(reqs)){
         const r=await api?.checkUploads(token)
-        if(r?.ok&&r.files&&r.files.length>0) pending+=r.files.length
+        if(r?.ok&&r.files&&r.files.length>0){
+          const prev=prevBadgeRef.current
+          if(r.files.length>0&&pending===0&&prev===0) newLabels.push(req.label)
+          pending+=r.files.length
+        }
       }
+      if(pending>prevBadgeRef.current&&pending>0){
+        const names=Object.values(reqs)
+          .filter((_,i)=>newLabels.includes(Object.values(reqs)[i]?.label))
+          .map(r=>r.label)
+        setUploadToast(`📥 New document${pending>1?'s':''} received — click inbox to save`)
+        setTimeout(()=>setUploadToast(null),8000)
+      }
+      prevBadgeRef.current=pending
       setUploadBadge(pending)
     }
     poll()
@@ -3797,6 +3828,14 @@ export default function App(){
               <button className="px-4 py-1.5 rounded sans" style={{fontSize:12,fontWeight:600,backgroundColor:C.ink,color:C.paperLight}} onClick={()=>setClientInfo(null)}>Close</button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ── Upload toast ── */}
+      {uploadToast&&(
+        <div className="fixed top-12 left-1/2 z-50 sans" style={{transform:'translateX(-50%)',backgroundColor:'#7BC95A',color:'#fff',borderRadius:6,padding:'12px 20px',fontSize:14,fontWeight:600,boxShadow:'0 4px 20px rgba(26,22,18,0.35)',display:'flex',alignItems:'center',gap:10,cursor:'pointer'}}
+          onClick={()=>{setUploadToast(null);setUploadInboxModal(true)}}>
+          {uploadToast}
         </div>
       )}
 

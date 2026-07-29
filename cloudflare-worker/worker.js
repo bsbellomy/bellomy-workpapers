@@ -41,10 +41,10 @@ export default {
       return handleCheckUploads(parts[1], request, env)
     }
     if (parts[0] === 'download-upload' && parts[1] && parts[2] && request.method === 'GET') {
-      return handleDownloadUpload(parts[1], parts[2], request, env)
+      return handleDownloadUpload(parts[1], decodeURIComponent(parts[2]), request, env)
     }
     if (parts[0] === 'delete-upload' && parts[1] && parts[2] && request.method === 'DELETE') {
-      return handleDeleteUpload(parts[1], parts[2], request, env)
+      return handleDeleteUpload(parts[1], decodeURIComponent(parts[2]), request, env)
     }
 
     // ── Magic link: GET /:token ───────────────────────────────────────────────
