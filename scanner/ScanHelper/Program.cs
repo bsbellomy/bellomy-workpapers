@@ -13,6 +13,14 @@ class Program
 {
     static async Task<int> Main(string[] args)
     {
+        // Catch unhandled exceptions from background threads (e.g. NAPS2 worker threads)
+        // and emit them as JSON to stderr so Electron can surface a useful message.
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+        {
+            var msg = e.ExceptionObject is Exception ex ? ex.Message : e.ExceptionObject?.ToString() ?? "Unknown error";
+            Console.Error.WriteLine(Json(new { ok = false, error = $"Scanner crashed: {msg}" }));
+        };
+
         var command = args.Length > 0 ? args[0] : "";
         try
         {

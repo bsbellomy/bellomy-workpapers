@@ -730,7 +730,13 @@ ipcMain.handle('fs:startScan', (_e, destFolder: string, useNativeUI: boolean, dp
           const c = readConfig(); delete c.scanDriver
           try { fs.writeFileSync(configPath(), JSON.stringify(c, null, 2), 'utf8') } catch {}
         }
-        resolve({ ok: false, error: result?.error ?? `Scanner exited with code ${code}` })
+        // If no JSON error was parsed, include raw stderr so the actual .NET exception
+        // text is visible rather than just the numeric exit code.
+        const rawErr = stderr.trim().replace(/^PAGE:\d+\n?/gm, '').trim()
+        const fallback = rawErr
+          ? `Scanner crashed (code ${code}): ${rawErr.split('\n')[0]}`
+          : `Scanner exited with code ${code}`
+        resolve({ ok: false, error: result?.error ?? fallback })
       }
     })
 
