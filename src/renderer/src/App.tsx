@@ -588,18 +588,32 @@ function EditFolderModal({folder,docTree,onClose,onSaved}:{folder:DocFolder;docT
           }
         }
         setProgress(75)
+        const expectedPages=merged.getPageCount()
         const saved=await merged.save({useObjectStreams:false})
         const keepIdx=Math.min(outputFileIdx,selected.length-1)
-        let keepPath=selected[keepIdx].path
-        const keepIsImage=isImageFile(selected[keepIdx].name)
-        if(keepIsImage){
-          // derive a .pdf path in the same folder
-          keepPath=keepPath.replace(/\.[^.]+$/,'.pdf')
-        }
-        const r=await api.savePdf(keepPath,saved.buffer.slice(saved.byteOffset,saved.byteOffset+saved.byteLength))
+        const keepFile=selected[keepIdx]
+        const keepIsImage=isImageFile(keepFile.name)
+        let keepPath=keepFile.path
+        if(keepIsImage) keepPath=keepPath.replace(/\.[^.]+$/,'.pdf')
+
+        // Write to temp file first — originals stay untouched until verified
+        const keepFilename=keepPath.split(/[/\\]/).pop()!
+        const tmpPath=keepPath.replace(/[^/\\]+$/,keepFilename+'.merging.tmp')
+        const r=await api.savePdf(tmpPath,saved.buffer.slice(saved.byteOffset,saved.byteOffset+saved.byteLength))
         if(!r.ok) throw new Error(r.error)
-        // Delete all selected files (including the original image if keepIsImage)
+
+        // Read back and verify page count before deleting anything
+        const verifyBytes=await api.readPdf(tmpPath)
+        if(!verifyBytes) throw new Error('Could not read back merged file for verification')
+        const {PDFDocument:VerifyDoc}=await import('pdf-lib')
+        const verifyDoc=await VerifyDoc.load(verifyBytes)
+        if(verifyDoc.getPageCount()!==expectedPages)
+          throw new Error(`Merge verification failed: expected ${expectedPages} pages, got ${verifyDoc.getPageCount()}`)
+
+        // Verified — delete originals then rename temp into place
         for(const f of selected){ await api.deleteFile(f.path) }
+        const renamed=await api.renameFile(tmpPath,keepFilename)
+        if(!renamed.ok) throw new Error(renamed.error)
       } else if(action==='move'){
         for(let i=0;i<selected.length;i++){
           setProgress(10+Math.round(i/selected.length*85))
