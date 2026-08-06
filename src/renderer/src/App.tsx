@@ -63,7 +63,8 @@ const api = (window as unknown as { electronAPI?: {
   openFile:       (p:string)=>Promise<{ok:boolean;error?:string}>
   createFolder:   (parentPath:string,name:string)=>Promise<{ok:boolean;error?:string;path?:string}>
   testWriteAccess:(folderPath:string)=>Promise<{ok:boolean;error?:string}>
-  createNotesFile:(p:string)=>Promise<{ok:boolean;error?:string;path?:string;openError?:string}>
+  createNotesFile:(p:string,author?:string)=>Promise<{ok:boolean;error?:string;path?:string;openError?:string}>
+  startNativeDrag:(paths:string[])=>void
   readTextFile:   (p:string)=>Promise<{ok:boolean;error?:string;content?:string}>
   writeTextFile:  (p:string,content:string)=>Promise<{ok:boolean;error?:string}>
   findTaxForm:    (clientPath:string)=>Promise<{ok:boolean;error?:string;result?:{path:string;name:string;year:string|null}|null}>
@@ -2840,9 +2841,13 @@ export default function App(){
           <div
             draggable
             onDragStart={e=>{
-              e.dataTransfer.effectAllowed='move'
+              e.dataTransfer.effectAllowed='copyMove'
+              const targets=multiSelect.some(f=>f.path===node.path)
+                ? multiSelect.map(f=>f.path)
+                : [node.path]
               if(!multiSelect.some(f=>f.path===node.path)) setMultiSelect([])
               setDragSrc(node.path)
+              api?.startNativeDrag(targets)
             }}
             onDragEnd={()=>setDragSrc(null)}
             className="flex items-center gap-1 cursor-pointer relative"
@@ -3048,7 +3053,7 @@ export default function App(){
                         onClick={async()=>{
                           const target=activeFolder
                           if(!target) return
-                          const r=await api?.createNotesFile(target.path)
+                          const r=await api?.createNotesFile(target.path,author)
                           if(!r?.ok) alert('Could not create notes file: '+(r?.error??'Unknown error'))
                           else{
                             refreshDocs(500)

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, safeStorage } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, shell, safeStorage, nativeImage } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { spawn } from 'child_process'
 import path from 'path'
@@ -881,12 +881,24 @@ ipcMain.handle('fs:createFolder', async (_e, parentPath: string, name: string) =
   } catch (err: unknown) { return { ok: false, error: String(err) } }
 })
 
-// ── Create a Notes text file in a folder (named "<year> Notes.txt" or "Notes.txt") ──
-ipcMain.handle('fs:createNotesFile', async (_e, folderPath: string) => {
+// ── Native OS file drag (lets users drag files from the panel to email, browser, etc.) ──
+ipcMain.on('fs:startNativeDrag', (event, filePaths: string[]) => {
+  const icon = nativeImage.createFromDataURL(
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAABmJLR0QA/wD/AP+gvaeTAAAAb0lEQVRYhe3WMQqAMAxG4bf3P7QO4qCTN3DRHsFbe4E6FMGhpbSlhX5DhoQHL4QMkiRJkqQOYI8HUEfGn3ECuDUHgMX2PQAs9vsAWOz3BmCx3xuAxX5vABb7vQFY7PcGYLHfG4DFfm8AFvu9AViS9AAA2AEWlQAAAABJRU5ErkJggg=='
+  )
+  const paths = filePaths.filter(p => fs.existsSync(p))
+  if (paths.length === 0) return
+  event.sender.startDrag({ file: paths[0], files: paths, icon })
+})
+
+// ── Create a Notes text file in a folder (named "<year> Notes - Author - Date.txt") ──
+ipcMain.handle('fs:createNotesFile', async (_e, folderPath: string, author?: string) => {
   try {
     const folderName = path.basename(folderPath)
     const yearMatch = folderName.match(/\d{4}/)
-    const baseName = yearMatch ? `${yearMatch[0]} Notes` : 'Notes'
+    const dateStr = new Date().toISOString().slice(0, 10)
+    const authorPart = author?.trim() ? ` - ${author.trim()}` : ''
+    const baseName = yearMatch ? `${yearMatch[0]} Notes${authorPart} - ${dateStr}` : `Notes${authorPart} - ${dateStr}`
     let dest = path.join(folderPath, `${baseName}.txt`)
     let n = 2
     while (fs.existsSync(dest)) { dest = path.join(folderPath, `${baseName} (${n}).txt`); n++ }
