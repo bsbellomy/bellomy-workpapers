@@ -152,6 +152,14 @@ The worker lives in `cloudflare-worker/` and is deployed separately from the Ele
 - **Custom domain:** `share.bellomycpa.com` (on Cloudflare DNS)
 - **Secret:** `UPLOAD_SECRET` — set via `wrangler secret put UPLOAD_SECRET` (not stored in repo)
 
+### Where the upload secret lives
+The `UPLOAD_SECRET` must match in three places:
+1. **Cloudflare Worker** — set via `wrangler secret put UPLOAD_SECRET` (write-only, not readable back from dashboard)
+2. **Each office machine** — entered in Bellomy Workpapers → Settings → Magic Links → Upload Secret field. Stored encrypted via Electron safeStorage in `%APPDATA%\bellomy-workpapers\`. The UI masks it with dots and cannot display it back.
+3. **Server `.env`** — stored in `D:\Projects\bellomy-workpapers\.env` as `UPLOAD_SECRET=value` for use by any tooling/scripts that need it. This file is gitignored.
+
+If the secret is ever lost: generate a new one, run `wrangler secret put UPLOAD_SECRET` in `cloudflare-worker/`, and re-enter it in the app Settings on every office machine.
+
 ### To redeploy the worker after changes
 ```bash
 cd cloudflare-worker
