@@ -50,11 +50,34 @@ if (Test-Path $scanner) {
     }
 }
 
+# 3. The built renderer must actually mount headlessly: load dist/renderer in a
+#    hidden Electron window (no preload) and confirm React commits DOM into
+#    #root. Catches a bundle that builds but throws on boot. Signals via exit
+#    code; diagnostics land in $resultFile.
+$electron = "node_modules\electron\dist\electron.exe"
+if (-not (Test-Path $electron)) {
+    $failures += "electron binary not found at $electron"
+} else {
+    $resultFile = Join-Path $env:TEMP "renderer-smoke.result.txt"
+    if (Test-Path $resultFile) { Remove-Item $resultFile -Force }
+    $env:SMOKE_RESULT_FILE = $resultFile
+    # Start-Process -Wait reliably blocks until the (GUI-subsystem) Electron
+    # process exits; the call operator (&) does not always wait for it.
+    $proc = Start-Process -FilePath $electron -ArgumentList "scripts\renderer-smoke.js" -NoNewWindow -Wait -PassThru
+    $rc = $proc.ExitCode
+    $detail = if (Test-Path $resultFile) { (Get-Content $resultFile -Raw).Trim() } else { "(no result file written)" }
+    if ($rc -ne 0) {
+        $failures += "renderer mount check failed: $detail"
+    } else {
+        Write-Host "  $detail"
+    }
+}
+
 if ($failures.Count -gt 0) {
     Write-Host "smoke: FAILED"
     $failures | ForEach-Object { Write-Host "  - $_" }
     exit 1
 }
 
-Write-Host "smoke: OK (build artifacts present, scanner runs)"
+Write-Host "smoke: OK (build artifacts present, scanner runs, renderer mounts)"
 exit 0

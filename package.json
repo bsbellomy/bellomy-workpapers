@@ -13,6 +13,7 @@
     "build:main": "tsc -p tsconfig.main.json",
     "package": "npm run build && electron-builder",
     "smoke": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke.ps1",
+    "smoke:renderer": "electron scripts/renderer-smoke.js",
     "release": "npm run build && npm run smoke && electron-builder --publish always",
     "ship": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ship.ps1"
   },
