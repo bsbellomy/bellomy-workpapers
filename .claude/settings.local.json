@@ -12,5 +12,19 @@
       "PowerShell($env:PATH += \";C:\\\\Program Files\\\\nodejs\"; Set-Location \"G:\\\\My Drive\\\\Firm Documents\\\\Billy\\\\Drivers\\\\Taxdome Viewer\"; Start-Process powershell -ArgumentList \"-NoExit\", \"-Command\", \"`$env:PATH += ';C:\\\\Program Files\\\\nodejs'; Set-Location 'G:\\\\My Drive\\\\Firm Documents\\\\Billy\\\\Drivers\\\\Taxdome Viewer'; npm run dev\" -WindowStyle Normal)",
       "PowerShell($env:PATH += \";C:\\\\Program Files\\\\nodejs\"; Set-Location \"G:\\\\My Drive\\\\Firm Documents\\\\Billy\\\\Drivers\\\\Taxdome Viewer\"; & \"C:\\\\Program Files\\\\nodejs\\\\npm.cmd\" install 2>&1 | Select-Object -Last 5)"
     ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ship.ps1",
+            "timeout": 1200,
+            "statusMessage": "Auto-commit + release (ship.ps1)..."
+          }
+        ]
+      }
+    ]
   }
 }

@@ -12,7 +12,8 @@
     "build:renderer": "vite build src/renderer",
     "build:main": "tsc -p tsconfig.main.json",
     "package": "npm run build && electron-builder",
-    "release": "npm run build && electron-builder --publish always"
+    "release": "npm run build && electron-builder --publish always",
+    "ship": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ship.ps1"
   },
   "keywords": [],
   "author": "Bellomy Accounting",
