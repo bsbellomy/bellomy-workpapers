@@ -7,3 +7,4 @@ dist/
 scanner/ScanHelper/bin/
 scanner/ScanHelper/obj/
 renderer-smoke.result.txt
+cloudflare-worker/.wrangler/

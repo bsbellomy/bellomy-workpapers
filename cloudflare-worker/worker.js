@@ -2,7 +2,8 @@
 //
 // Magic link endpoints (send files TO clients):
 //   POST /upload         (auth) — upload a file, get a single-view link back
-//   GET  /:token         — stream the file once, self-delete
+//   GET  /:token         — "click to view" landing page (idempotent, scanner-safe)
+//   POST /:token         — consume: stream the file once, then self-delete
 //
 // Upload request endpoints (receive files FROM clients):
 //   POST /create-upload-request  (auth) — register a token + label + expiry
@@ -47,9 +48,21 @@ export default {
       return handleDeleteUpload(parts[1], decodeURIComponent(parts[2]), request, env)
     }
 
-    // ── Magic link: GET /:token ───────────────────────────────────────────────
+    // ── Magic link: GET /:token — human-facing landing page (does NOT consume) ─
+    // A bare GET is exactly what email security scanners (Defender Safe Links,
+    // Proofpoint URL Defense, Mimecast, Barracuda, ...) issue to detonate links
+    // in inbound mail. It must be idempotent and must NOT spend the one-time
+    // view. It returns a "click to view" page whose button POSTs to consume.
     if (request.method === 'GET' && parts.length === 1 && parts[0]) {
-      return handleView(parts[0], env, ctx)
+      return handleLanding(parts[0], env, ctx)
+    }
+
+    // ── Magic link: POST /:token — consume + stream the file once ──────────────
+    // Reached only when the human clicks "View Document". Scanners fetch/render
+    // GET links but do not submit POST forms, so this is where the single view
+    // is actually spent.
+    if (request.method === 'POST' && parts.length === 1 && parts[0]) {
+      return handleConsume(parts[0], env, ctx)
     }
 
     return new Response('Not found', { status: 404 })
@@ -86,7 +99,25 @@ async function handleMagicUpload(request, env) {
   })
 }
 
-async function handleView(token, env, ctx) {
+// GET /:token — idempotent "click to view" page. Never consumes the link, so
+// an automated scanner GET leaves it intact for the human.
+async function handleLanding(token, env, ctx) {
+  const recordStr = await env.LINKS_KV.get(`ml:${token}`)
+  if (!recordStr) return expiredPage()
+  const record = JSON.parse(recordStr)
+  if (record.viewed || Date.now() > record.expiresAt) {
+    // Already spent or expired: cleanup is safe and idempotent.
+    ctx.waitUntil(Promise.all([env.MAGIC_LINKS_BUCKET.delete(`ml/${token}`), env.LINKS_KV.delete(`ml:${token}`)]))
+    return expiredPage()
+  }
+  // Valid and unspent — show the landing page WITHOUT touching the record.
+  return new Response(landingPage(token, record.fileName), {
+    headers: { 'Content-Type': 'text/html;charset=utf-8', 'Cache-Control': 'no-store, private' },
+  })
+}
+
+// POST /:token — spend the single view: stream the file once, then self-delete.
+async function handleConsume(token, env, ctx) {
   const recordStr = await env.LINKS_KV.get(`ml:${token}`)
   if (!recordStr) return expiredPage()
   const record = JSON.parse(recordStr)
@@ -103,8 +134,57 @@ async function handleView(token, env, ctx) {
     headers: {
       'Content-Type': obj.httpMetadata?.contentType || 'application/octet-stream',
       'Content-Disposition': `inline; filename="${record.fileName}"`,
+      // One-time payload: keep any intermediary/scanner proxy from caching it.
+      'Cache-Control': 'no-store, private',
     },
   })
+}
+
+// Branded interstitial served on GET. The "View Document" button POSTs back to
+// the same URL, which is the step that actually consumes the link.
+function landingPage(token, fileName) {
+  const safeName = escapeHtml(fileName || 'a document')
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<meta name="robots" content="noindex,nofollow"/>
+<title>Secure Document — Bellomy Accounting</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f3ef;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+  .card{background:#fff;border-radius:10px;box-shadow:0 4px 24px rgba(0,0,0,0.10);max-width:480px;width:100%;overflow:hidden}
+  .header{background:#2a2118;color:#fff;padding:24px 28px}
+  .header h1{font-size:18px;font-weight:600;letter-spacing:-.2px}
+  .header p{font-size:13px;color:#a89880;margin-top:4px}
+  .body{padding:28px;text-align:center}
+  .icon{width:48px;height:48px;stroke:#b8860b;margin:0 auto 16px;display:block}
+  .body h2{font-size:17px;color:#2a2118;margin-bottom:8px}
+  .fname{font-size:14px;color:#8a7a6a;margin-bottom:20px;word-break:break-word}
+  .note{font-size:13px;color:#8a7a6a;background:#f8f6f2;border-radius:6px;padding:12px 16px;margin-bottom:22px;line-height:1.5}
+  .btn{display:block;width:100%;padding:13px;background:#b8860b;color:#fff;font-size:15px;font-weight:600;border:none;border-radius:6px;cursor:pointer;transition:background .15s}
+  .btn:hover{background:#9a6e08}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="header">
+    <h1>Bellomy Accounting</h1>
+    <p>Secure document</p>
+  </div>
+  <div class="body">
+    <svg class="icon" fill="none" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/></svg>
+    <h2>Your accountant sent you a secure document</h2>
+    <div class="fname">${safeName}</div>
+    <div class="note">For your privacy, this document can be opened <strong>once</strong>. Click below when you're ready to view it.</div>
+    <form method="POST" action="/${token}">
+      <button class="btn" type="submit">View Document</button>
+    </form>
+  </div>
+</div>
+</body>
+</html>`
 }
 
 // ── Upload requests: receive files from clients ───────────────────────────────
