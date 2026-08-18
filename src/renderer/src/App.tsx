@@ -2841,7 +2841,11 @@ export default function App(){
           <div
             draggable
             onDragStart={e=>{
-              e.dataTransfer.effectAllowed='copyMove'
+              // Electron requires preventDefault() in dragstart for
+              // webContents.startDrag() to hand a real file to the OS. Without
+              // it Chromium runs its own HTML5 drag and the drop never reaches
+              // an external program (email, Explorer, browser).
+              e.preventDefault()
               const targets=multiSelect.some(f=>f.path===node.path)
                 ? multiSelect.map(f=>f.path)
                 : [node.path]
