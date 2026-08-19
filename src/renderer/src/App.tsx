@@ -2198,9 +2198,18 @@ export default function App(){
   const handlePdfWheel=useCallback((_e:React.WheelEvent<HTMLDivElement>)=>{},[])
 
 
-  // Load PDF + annotations when file selected
+  // Load PDF + annotations when a file is selected; unload the viewer when cleared
   useEffect(()=>{
-    if(!api||!selectedFile) return
+    if(!selectedFile){
+      // selectedFile was cleared (switched client, moved/deleted/renamed file).
+      // Unload the viewer — without this the effect returned early and left the
+      // previous PDF on screen because pdfBytes/annotations were never reset.
+      setPdfBytes(null)
+      setAnnotations({tickmarks:[],signoffs:[]})
+      setNoteText(null); setNoteLoaded(false)
+      return
+    }
+    if(!api) return
     // Use pending page from bookmark click, otherwise start at page 1
     const startPage = pendingPageRef.current ?? 1
     pendingPageRef.current = null
