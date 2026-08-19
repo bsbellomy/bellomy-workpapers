@@ -883,12 +883,22 @@ ipcMain.handle('fs:createFolder', async (_e, parentPath: string, name: string) =
 
 // ── Native OS file drag (lets users drag files from the panel to email, browser, etc.) ──
 ipcMain.on('fs:startNativeDrag', (event, filePaths: string[]) => {
-  const icon = nativeImage.createFromDataURL(
-    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAABmJLR0QA/wD/AP+gvaeTAAAAb0lEQVRYhe3WMQqAMAxG4bf3P7QO4qCTN3DRHsFbe4E6FMGhpbSlhX5DhoQHL4QMkiRJkqQOYI8HUEfGn3ECuDUHgMX2PQAs9vsAWOz3BmCx3xuAxX5vABb7vQFY7PcGYLHfG4DFfm8AFvu9AViS9AAA2AEWlQAAAABJRU5ErkJggg=='
-  )
   const paths = filePaths.filter(p => fs.existsSync(p))
   if (paths.length === 0) return
-  event.sender.startDrag({ file: paths[0], files: paths, icon })
+  // Build a guaranteed non-empty drag icon. The previous base64 data-URL
+  // decoded to an EMPTY nativeImage, so startDrag threw "Must specify
+  // non-empty 'icon' option" and the drag silently never started — which is
+  // why dragging to another program never worked. A solid bitmap always
+  // decodes to a valid image.
+  const s = 24
+  const bmp = Buffer.alloc(s * s * 4)
+  for (let i = 0; i < bmp.length; i += 4) { bmp[i] = 0x88; bmp[i + 1] = 0x88; bmp[i + 2] = 0x88; bmp[i + 3] = 0xff }
+  const icon = nativeImage.createFromBitmap(bmp, { width: s, height: s })
+  try {
+    event.sender.startDrag({ file: paths[0], files: paths, icon })
+  } catch (err) {
+    console.error('fs:startNativeDrag: startDrag failed:', err)
+  }
 })
 
 // ── Create a Notes text file in a folder (named "<year> Notes - Author - Date.txt") ──

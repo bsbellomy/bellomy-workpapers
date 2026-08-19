@@ -4,7 +4,7 @@ import {
   ChevronRight, ChevronDown, FileSignature, ZoomIn, ZoomOut, Maximize2,
   MessageSquare, PanelRightClose, PanelRightOpen, PanelLeftClose, PanelLeftOpen,
   Clock, Layers, Settings, ScanLine, ArrowLeft, Merge, Printer,
-  RefreshCw, Trash2, Calculator, FileSpreadsheet, StickyNote, Copy, CreditCard, RotateCw, Mail, Inbox,
+  RefreshCw, Trash2, Calculator, FileSpreadsheet, StickyNote, Copy, CreditCard, RotateCw, Mail, Inbox, GripVertical,
 } from 'lucide-react'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -2841,17 +2841,14 @@ export default function App(){
           <div
             draggable
             onDragStart={e=>{
-              // Electron requires preventDefault() in dragstart for
-              // webContents.startDrag() to hand a real file to the OS. Without
-              // it Chromium runs its own HTML5 drag and the drop never reaches
-              // an external program (email, Explorer, browser).
-              e.preventDefault()
-              const targets=multiSelect.some(f=>f.path===node.path)
-                ? multiSelect.map(f=>f.path)
-                : [node.path]
+              // Row body drags INTERNALLY (HTML5) to move files between
+              // folders. External OS drag lives on the grip handle at the row's
+              // right edge — the two can't share one gesture, because a native
+              // startDrag suppresses the HTML5 drop events the folder targets
+              // depend on.
+              e.dataTransfer.effectAllowed='copyMove'
               if(!multiSelect.some(f=>f.path===node.path)) setMultiSelect([])
               setDragSrc(node.path)
-              api?.startNativeDrag(targets)
             }}
             onDragEnd={()=>setDragSrc(null)}
             className="flex items-center gap-1 cursor-pointer relative"
@@ -2905,6 +2902,24 @@ export default function App(){
                 {node.annotations.tickmarks.length}
               </span>
             )}
+            {/* Drag-out handle → native OS drag to email / Explorer / browser.
+                Separate from the row body so internal folder-drag keeps working. */}
+            <span
+              draggable
+              title="Drag to another app (email, Explorer, browser)"
+              onDragStart={e=>{
+                e.preventDefault()      // required for Electron webContents.startDrag
+                e.stopPropagation()     // don't also start the row's internal drag
+                const targets=multiSelect.some(f=>f.path===node.path)
+                  ? multiSelect.map(f=>f.path)
+                  : [node.path]
+                api?.startNativeDrag(targets)
+              }}
+              onClick={e=>e.stopPropagation()}
+              style={{flexShrink:0,cursor:'grab',color:C.inkFaint,display:'flex',alignItems:'center',paddingLeft:2}}
+            >
+              <GripVertical size={13}/>
+            </span>
           </div>
           {/* Bookmark tree */}
           {bmOpen&&Array.isArray(bmState)&&(
