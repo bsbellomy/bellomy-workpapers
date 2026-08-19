@@ -378,6 +378,17 @@ function loadAnnotations(pdfPath: string) {
 }
 
 // Sort folders/files: folders first, year folders descending, rest alphabetical
+// Parse a leading MM-DD-YYYY (1-2 digit month/day) date out of a filename,
+// e.g. "08-19-2026.pdf" or "08-19-2026 IRS letter.pdf". Returns a timestamp,
+// or null if the name doesn't start with a valid date.
+function parseFileDate(name: string): number | null {
+  const m = name.match(/^(\d{1,2})-(\d{1,2})-(\d{4})\b/)
+  if (!m) return null
+  const mm = +m[1], dd = +m[2], yyyy = +m[3]
+  if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return null
+  return new Date(yyyy, mm - 1, dd).getTime()
+}
+
 function sortedEntries(entries: fs.Dirent[]) {
   return entries.sort((a, b) => {
     if (a.isDirectory() && !b.isDirectory()) return -1
@@ -385,6 +396,14 @@ function sortedEntries(entries: fs.Dirent[]) {
     const aYear = /^\d{4}$/.test(a.name)
     const bYear = /^\d{4}$/.test(b.name)
     if (aYear && bYear) return parseInt(b.name) - parseInt(a.name) // newest first
+    // Date-named files (MM-DD-YYYY) sort by actual date, newest first, and come
+    // before non-dated files. Otherwise plain localeCompare treats them as text
+    // and sorts by month, ignoring the year.
+    const aDate = parseFileDate(a.name)
+    const bDate = parseFileDate(b.name)
+    if (aDate !== null && bDate !== null) return bDate - aDate // newest first
+    if (aDate !== null) return -1
+    if (bDate !== null) return 1
     return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
   })
 }
