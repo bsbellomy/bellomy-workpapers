@@ -146,7 +146,13 @@ class Program
             BitDepth    = useNativeUI ? BitDepth.Color : bitDepth,  // Color = driver default
             ExcludeBlankPages          = skipBlankPages,
             BlankPageWhiteThreshold    = 70,
-            BlankPageCoverageThreshold = 25,
+            // NAPS2's coverage scale is 0=0%, 100=1% of the page. The old value
+            // of 25 (=0.25% coverage) was ABOVE NAPS2's default of 15 and was
+            // dropping real but sparse pages (short letters, light forms) as
+            // "blank". Lowered to 5 (=0.05%) so only near-empty pages are
+            // dropped — losing a real tax page is far worse than keeping a
+            // blank. Raise toward 10-15 if blank backs start slipping through.
+            BlankPageCoverageThreshold = 5,
         };
 
         var images = new List<ProcessedImage>();
