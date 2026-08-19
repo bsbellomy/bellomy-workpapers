@@ -1963,6 +1963,16 @@ function UploadInboxModal({onClose,onSaved}:{onClose:()=>void;onSaved:()=>void})
 
 // ── App ───────────────────────────────────────────────────────────────────────
 
+// Clamp a context-menu to the viewport: flip it upward/leftward when it would
+// overflow the bottom/right edge, so it never renders off-screen.
+function menuPosition(x:number,y:number,estWidth=220,estHeight=280):React.CSSProperties{
+  const vw=window.innerWidth, vh=window.innerHeight
+  const s:React.CSSProperties={}
+  if(y+estHeight>vh) s.bottom=Math.max(4,vh-y); else s.top=y
+  if(x+estWidth>vw) s.right=Math.max(4,vw-x); else s.left=x
+  return s
+}
+
 export default function App(){
   const [rootPath,setRootPath]             = useState('Z:\\')
   const [clients,setClients]               = useState<string[]>([])
@@ -3598,7 +3608,7 @@ export default function App(){
         const affectedFiles=multiSelect.length>1?multiSelect:[ctxMenu.file]
         const isBulk=affectedFiles.length>1
         return(
-          <div className="fixed z-50 rounded overflow-hidden" style={{left:ctxMenu.x,top:ctxMenu.y,backgroundColor:'#FEFCF7',border:`1px solid ${C.rule}`,boxShadow:'0 4px 16px rgba(26,22,18,0.15)',minWidth:220}} onClick={e=>e.stopPropagation()}>
+          <div className="fixed z-50 rounded overflow-hidden" style={{...menuPosition(ctxMenu.x,ctxMenu.y,220,300),backgroundColor:'#FEFCF7',border:`1px solid ${C.rule}`,boxShadow:'0 4px 16px rgba(26,22,18,0.15)',minWidth:220}} onClick={e=>e.stopPropagation()}>
             <div className="px-3 py-1.5" style={{borderBottom:`1px solid ${C.ruleSoft}`,backgroundColor:C.paperDeep}}>
               <div className="truncate sans" style={{fontSize:11,color:C.inkMuted,maxWidth:260}}>
                 {isBulk?`${affectedFiles.length} files selected`:ctxMenu.file.name}
@@ -3639,7 +3649,7 @@ export default function App(){
 
       {/* ── Folder context menu ── */}
       {ctxFolder&&(
-        <div className="fixed z-50 rounded overflow-hidden" style={{left:ctxFolder.x,top:ctxFolder.y,backgroundColor:'#FEFCF7',border:`1px solid ${C.rule}`,boxShadow:'0 4px 16px rgba(26,22,18,0.15)',minWidth:200}} onClick={e=>e.stopPropagation()}>
+        <div className="fixed z-50 rounded overflow-hidden" style={{...menuPosition(ctxFolder.x,ctxFolder.y,200,240),backgroundColor:'#FEFCF7',border:`1px solid ${C.rule}`,boxShadow:'0 4px 16px rgba(26,22,18,0.15)',minWidth:200}} onClick={e=>e.stopPropagation()}>
           <div className="px-3 py-1.5" style={{borderBottom:`1px solid ${C.ruleSoft}`,backgroundColor:C.paperDeep}}>
             <div className="truncate sans" style={{fontSize:11,color:C.inkMuted}}>{ctxFolder.folder.name}</div>
           </div>
