@@ -73,10 +73,17 @@ try {
     Assert-LastExit "git add failed"
     git commit -m "v${version}: auto-release"
     Assert-LastExit "git commit failed"
-    git tag "v$version"
-    Assert-LastExit "git tag failed"
-    git push --follow-tags origin main
+    # electron-builder's GitHub publish already creates the v$version tag (local
+    # AND remote). A plain `git tag` here would fail "already exists" and abort
+    # the ship AFTER the release is out, leaving the bump commit unpushed
+    # (happened on 2026-08-19). Only create the tag if it's missing.
+    if (-not (git tag -l "v$version")) {
+        git tag "v$version"
+        Assert-LastExit "git tag failed"
+    }
+    git push origin main
     Assert-LastExit "git push failed"
+    git push origin "v$version" 2>$null  # ensure tag on remote; ignore if already there
 
     Write-Host "ship: published v$version and pushed to origin/main"
 }
