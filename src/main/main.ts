@@ -245,7 +245,17 @@ ipcMain.handle('fs:downloadAndSaveUpload', async (_e, token: string, filename: s
     const resp = await fetch(`${workerUrl}/download-upload/${token}/${encodeURIComponent(filename)}`, {
       headers: { 'Authorization': `Bearer ${uploadSecret}` },
     })
-    if (!resp.ok) return { ok: false, error: `HTTP ${resp.status}` }
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => '')
+      let msg = `HTTP ${resp.status}`
+      try {
+        const j = JSON.parse(detail)
+        if (j?.error === 'File not found in storage') {
+          msg = 'This upload is no longer in storage — the client may need to re-upload it.'
+        } else if (j?.error) { msg = j.error }
+      } catch { if (detail) msg += `: ${detail}` }
+      return { ok: false, error: msg }
+    }
     const buf = Buffer.from(await resp.arrayBuffer())
     const dest = path.join(req.folderPath, filename)
     fs.writeFileSync(dest, buf)

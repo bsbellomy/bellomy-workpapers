@@ -375,11 +375,34 @@ async function handleCheckUploads(token, request, env) {
   })
 }
 
+// Normalize a filename for lenient matching: collapse whitespace runs, NFC
+// unicode, strip case. Guards against whitespace/unicode drift between the
+// stored R2 key and the name the app looks up.
+function normName(s) {
+  return s.normalize('NFC').replace(/\s+/g, ' ').trim().toLowerCase()
+}
+
 async function handleDownloadUpload(token, filename, request, env) {
   if (!auth(request, env)) return new Response('Unauthorized', { status: 401 })
-  const key = `ur/${token}/${filename}`
-  const obj = await env.MAGIC_LINKS_BUCKET.get(key)
-  if (!obj) return new Response('Not found', { status: 404 })
+  const prefix = `ur/${token}/`
+  let obj = await env.MAGIC_LINKS_BUCKET.get(prefix + filename)
+  if (!obj) {
+    // Exact key missed — list what's actually under this token and match
+    // leniently. If nothing matches, report what IS there so the failure is
+    // diagnosable instead of a bare 404 (e.g. the object was never stored or
+    // was already saved+deleted).
+    const listed = await env.MAGIC_LINKS_BUCKET.list({ prefix })
+    const want = normName(filename)
+    const hit = listed.objects.find(o => normName(o.key.slice(prefix.length)) === want)
+    if (hit) obj = await env.MAGIC_LINKS_BUCKET.get(hit.key)
+    if (!obj) {
+      const available = listed.objects.map(o => o.key.slice(prefix.length))
+      return new Response(
+        JSON.stringify({ error: 'File not found in storage', requested: filename, available }),
+        { status: 404, headers: { 'Content-Type': 'application/json' } }
+      )
+    }
+  }
   return new Response(obj.body, {
     headers: {
       'Content-Type': obj.httpMetadata?.contentType || 'application/octet-stream',
@@ -390,12 +413,21 @@ async function handleDownloadUpload(token, filename, request, env) {
 
 async function handleDeleteUpload(token, filename, request, env) {
   if (!auth(request, env)) return new Response('Unauthorized', { status: 401 })
-  const key = `ur/${token}/${filename}`
-  await env.MAGIC_LINKS_BUCKET.delete(key)
+  const prefix = `ur/${token}/`
+  // Delete the exact key AND any leniently-matching object, so a file served
+  // via the lenient match in handleDownloadUpload is actually cleaned up rather
+  // than lingering in R2 (and staying listed).
+  const want = normName(filename)
+  const listed = await env.MAGIC_LINKS_BUCKET.list({ prefix })
+  const toDelete = new Set([prefix + filename])
+  for (const o of listed.objects) {
+    if (normName(o.key.slice(prefix.length)) === want) toDelete.add(o.key)
+  }
+  await Promise.all([...toDelete].map(k => env.MAGIC_LINKS_BUCKET.delete(k)))
   const recordStr = await env.LINKS_KV.get(`ur:${token}`)
   if (recordStr) {
     const record = JSON.parse(recordStr)
-    record.files = record.files.filter(f => f !== filename)
+    record.files = record.files.filter(f => normName(f) !== want)
     const ttl = Math.ceil((record.expiresAt - Date.now()) / 1000) + 3600
     await env.LINKS_KV.put(`ur:${token}`, JSON.stringify(record), { expirationTtl: Math.max(ttl, 3600) })
   }
