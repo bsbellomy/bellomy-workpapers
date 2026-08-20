@@ -2872,7 +2872,7 @@ export default function App(){
             onDragEnd={()=>setDragSrc(null)}
             className="flex items-center gap-1 cursor-pointer relative"
             style={{
-              paddingLeft:6+depth*14,paddingRight:10,paddingTop:5,paddingBottom:5,
+              paddingLeft:8+depth*16,paddingRight:10,paddingTop:7,paddingBottom:7,
               backgroundColor:isActive?C.ochreSoft:isMulti?'#E8F0F8':'transparent',
               opacity:isDragging?0.35:1,
               borderLeft:isActive?`4px solid ${C.ochre}`:isMulti?`4px solid #4A7FA5`:isAbove?`4px solid ${C.ochreLight}`:'4px solid transparent',
@@ -2907,15 +2907,15 @@ export default function App(){
               <span style={{width:16,flexShrink:0}}/>
             )}
             {isWordFile(node.name)?(
-              <FileText size={13} style={{color:isActive?C.ochre:'#2C5F9E',flexShrink:0}}/>
+              <FileText size={17} style={{color:isActive?C.ochre:'#2C5F9E',flexShrink:0}}/>
             ):isExcelFile(node.name)?(
-              <FileSpreadsheet size={13} style={{color:isActive?C.ochre:'#2E7D4F',flexShrink:0}}/>
+              <FileSpreadsheet size={17} style={{color:isActive?C.ochre:'#2E7D4F',flexShrink:0}}/>
             ):fileExt(node.name)==='txt'?(
-              <StickyNote size={13} style={{color:isActive?C.ochre:'#B8870A',flexShrink:0}}/>
+              <StickyNote size={17} style={{color:isActive?C.ochre:'#B8870A',flexShrink:0}}/>
             ):(
-              <FileText size={13} style={{color:isActive?C.ochre:C.inkFaint,flexShrink:0}}/>
+              <FileText size={17} style={{color:isActive?C.ochre:C.inkFaint,flexShrink:0}}/>
             )}
-            <span className="flex-1 truncate sans" title={node.name} style={{fontSize:14,color:isActive?C.ink:C.inkSoft,fontWeight:isActive?600:400,marginLeft:3}}>{node.name}</span>
+            <span className="flex-1 truncate sans" title={node.name} style={{fontSize:15,color:isActive?C.ink:C.inkSoft,fontWeight:isActive?600:450,marginLeft:5}}>{node.name}</span>
             {node.annotations.tickmarks.length>0&&(
               <span className="mono px-1 rounded flex-shrink-0" style={{backgroundColor:isActive?C.ochre:C.paperDeep,color:isActive?C.paperLight:C.inkSoft,fontSize:10,fontWeight:600}}>
                 {node.annotations.tickmarks.length}
@@ -3030,7 +3030,7 @@ export default function App(){
                     }
                   }}
                   onChange={e=>setSearch(e.target.value)}
-                  className="flex-1 outline-none text-[11px] bg-transparent min-w-0 sans"
+                  className="flex-1 outline-none text-[13px] bg-transparent min-w-0 sans"
                   style={{color:C.ink,fontWeight:selectedClient&&!search?600:400}}
                 />
               </div>
@@ -3053,17 +3053,17 @@ export default function App(){
                   {filteredClients.map(name=>{
                     const isSel=selectedClient===name
                     return(
-                      <div key={name} className="flex items-center gap-2 px-3 py-2 cursor-pointer relative row-hover" style={{backgroundColor:isSel?C.ochreSoft:'transparent'}} onClick={()=>{setSelectedClient(name);setSearch('');setActiveFolder({name,path:rootPath.replace(/\\$/,'')+`\\${name}`})}}
+                      <div key={name} className="flex items-center gap-2.5 px-3 py-2.5 cursor-pointer relative row-hover" style={{backgroundColor:isSel?C.ochreSoft:'transparent'}} onClick={()=>{setSelectedClient(name);setSearch('');setActiveFolder({name,path:rootPath.replace(/\\$/,'')+`\\${name}`})}}
                         onContextMenu={e=>{
                           e.preventDefault();e.stopPropagation()
                           setCtxFolder({x:e.clientX,y:e.clientY,folder:{name,type:'folder',path:rootPath.replace(/\\$/,'')+`\\${name}`,children:[]},hoistOnly:true})
                         }}
                       >
                         {isSel&&<div className="absolute left-0 top-0 bottom-0" style={{width:2,backgroundColor:C.ochre}}/>}
-                        <div style={{width:22,height:22,backgroundColor:isSel?C.ochre:C.paper,border:`1px solid ${isSel?C.ochre:C.rule}`,borderRadius:2,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
-                          <span className="serif" style={{fontSize:11,fontWeight:600,color:isSel?C.ink:C.inkSoft}}>{name[0].toUpperCase()}</span>
+                        <div style={{width:28,height:28,backgroundColor:isSel?C.ochre:C.paper,border:`1px solid ${isSel?C.ochre:C.rule}`,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+                          <span className="serif" style={{fontSize:13,fontWeight:600,color:isSel?C.ink:C.inkSoft}}>{name[0].toUpperCase()}</span>
                         </div>
-                        <span className="flex-1 truncate sans" title={name} style={{fontSize:14,fontWeight:isSel?600:500,color:C.ink}}>{name}</span>
+                        <span className="flex-1 truncate sans" title={name} style={{fontSize:15,fontWeight:isSel?600:500,color:C.ink}}>{name}</span>
                         <button
                           title="Client info (name & SSN/EIN from tax return)"
                           onClick={e=>{e.preventDefault();e.stopPropagation();openClientInfo(name)}}
