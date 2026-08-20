@@ -81,9 +81,12 @@ try {
         git tag "v$version"
         Assert-LastExit "git tag failed"
     }
+    # electron-builder's GitHub release already creates the tag on the remote
+    # (a release requires one), so pushing the branch is enough. Don't redirect
+    # git's stderr here — under PowerShell 5.1 `2>$null` wraps git's normal push
+    # output as a terminating error and fails the ship after it already shipped.
     git push origin main
     Assert-LastExit "git push failed"
-    git push origin "v$version" 2>$null  # ensure tag on remote; ignore if already there
 
     Write-Host "ship: published v$version and pushed to origin/main"
 }
