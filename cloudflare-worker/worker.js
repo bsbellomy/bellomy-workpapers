@@ -358,10 +358,9 @@ async function handleClientUpload(token, request, env) {
     httpMetadata: { contentType: file.type || 'application/octet-stream' },
   })
 
-  if (!record.files.includes(safeFileName)) record.files.push(safeFileName)
-  const ttl = Math.ceil((record.expiresAt - Date.now()) / 1000) + 3600
-  await env.LINKS_KV.put(`ur:${token}`, JSON.stringify(record), { expirationTtl: Math.max(ttl, 3600) })
-
+  // No KV write here on purpose: the inbox list is derived from R2 in
+  // handleCheckUploads, so we never maintain a separate files[] array that could
+  // desync or be clobbered by concurrent uploads/saves (lost-update race).
   return new Response(JSON.stringify({ ok: true }), { headers: { 'Content-Type': 'application/json' } })
 }
 
@@ -370,7 +369,13 @@ async function handleCheckUploads(token, request, env) {
   const recordStr = await env.LINKS_KV.get(`ur:${token}`)
   if (!recordStr) return new Response(JSON.stringify({ ok: false, error: 'Not found' }), { headers: { 'Content-Type': 'application/json' } })
   const record = JSON.parse(recordStr)
-  return new Response(JSON.stringify({ ok: true, files: record.files, label: record.label, expiresAt: record.expiresAt }), {
+  // Source of truth for what's available is R2, not a KV array. Listing storage
+  // directly means already-saved files (deleted from R2) never linger as
+  // phantoms, and any file present in R2 is always shown — no desync, no race.
+  const prefix = `ur/${token}/`
+  const listed = await env.MAGIC_LINKS_BUCKET.list({ prefix })
+  const files = listed.objects.map(o => o.key.slice(prefix.length))
+  return new Response(JSON.stringify({ ok: true, files, label: record.label, expiresAt: record.expiresAt }), {
     headers: { 'Content-Type': 'application/json' },
   })
 }
@@ -424,13 +429,8 @@ async function handleDeleteUpload(token, filename, request, env) {
     if (normName(o.key.slice(prefix.length)) === want) toDelete.add(o.key)
   }
   await Promise.all([...toDelete].map(k => env.MAGIC_LINKS_BUCKET.delete(k)))
-  const recordStr = await env.LINKS_KV.get(`ur:${token}`)
-  if (recordStr) {
-    const record = JSON.parse(recordStr)
-    record.files = record.files.filter(f => normName(f) !== want)
-    const ttl = Math.ceil((record.expiresAt - Date.now()) / 1000) + 3600
-    await env.LINKS_KV.put(`ur:${token}`, JSON.stringify(record), { expirationTtl: Math.max(ttl, 3600) })
-  }
+  // No KV update: the inbox list is derived from R2, so removing the object(s)
+  // is all that's needed — and it avoids the read-modify-write race entirely.
   return new Response(JSON.stringify({ ok: true }), { headers: { 'Content-Type': 'application/json' } })
 }
 
