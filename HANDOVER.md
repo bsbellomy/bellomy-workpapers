@@ -1,8 +1,8 @@
 # Bellomy Workpapers — Developer Handover Guide
 
-**Current version:** 1.0.56  
+**Current version:** 1.0.62  
 **GitHub:** https://github.com/bsbellomy/bellomy-workpapers  
-**Last updated:** 2026-08-14
+**Last updated:** 2026-08-20
 
 ---
 
@@ -183,7 +183,7 @@ See `cloudflare-worker/README.md` — it has the full step-by-step setup.
 
 The built binary goes to `scanner/ScanHelper/bin/publish/` and is bundled into the app installer as an `extraResource` at `resources/scanner/`.
 
-**Scanner + TaxDome drive:** TaxDome maps a network drive (Z: or T:) using a desktop sync app. If that drive isn't mapped when Workpapers launches, scans fail. The app auto-launches TaxDome on startup (`C:\Program Files (x86)\TaxDome\TaxDome.exe`) with a 4-second wait for the drive to mount.
+**Scanner + TaxDome drive:** TaxDome maps a network drive (Z: or T:) using a desktop sync app. If that drive isn't mapped when Workpapers launches, scans fail. The app auto-launches TaxDome on startup with a 4-second wait for the drive to mount. It prefers the newer install `C:\Program Files\TaxDomeApp\TaxDome.exe` and falls back to the older `C:\Program Files (x86)\TaxDome\TaxDome.exe` (see `TAXDOME_EXES` in `main.ts`); both run as `TaxDome.exe`.
 
 ---
 
