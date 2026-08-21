@@ -3173,7 +3173,7 @@ export default function App(){
           <div className="flex items-center gap-1 px-3 py-1.5 flex-shrink-0" style={{backgroundColor:C.paperDeep,borderBottom:`1px solid ${C.rule}`}}>
             {/* Scan */}
             <button className="tool-btn sans" style={{color:C.inkSoft,opacity:scanning?0.5:1}} onClick={()=>{ if(!scanning) setShowScanModal(true) }} title="Scan document">
-              <ScanLine size={16} style={{color:C.ochre}}/> Scan
+              <ScanLine size={20} style={{color:C.ochre}}/> Scan
             </button>
             {scanning&&(
               <span className="sans pulse" style={{fontSize:11,color:C.ochre}}>
@@ -3181,18 +3181,18 @@ export default function App(){
               </span>
             )}
             <button className="tool-btn sans" style={{color:C.inkFaint,padding:'5px 6px'}} onClick={()=>setShowScanSettings(true)} title="Scanner settings">
-              <Settings size={15}/>
+              <Settings size={19}/>
             </button>
 
             <div style={{width:1,height:18,backgroundColor:C.rule,margin:'0 4px'}}/>
 
             {/* Print full doc */}
             <button className="tool-btn" onClick={handlePrint} disabled={!selectedFile} title="Print document" style={{color:C.inkSoft,padding:'5px 8px'}}>
-              <Printer size={16} style={{color:selectedFile?C.ochre:'#bbb'}}/>
+              <Printer size={20} style={{color:selectedFile?C.ochre:'#bbb'}}/>
             </button>
             {/* Print current page */}
             <button className="tool-btn" onClick={handlePrintPage} disabled={!selectedFile||!pdfBytes} title="Print current page" style={{color:C.inkSoft,padding:'5px 8px',position:'relative'}}>
-              <Printer size={16} style={{color:selectedFile?C.ochre:'#bbb'}}/>
+              <Printer size={20} style={{color:selectedFile?C.ochre:'#bbb'}}/>
               <span style={{position:'absolute',top:3,right:3,fontSize:8,fontWeight:700,color:C.ochreDeep,lineHeight:1,backgroundColor:C.ochreSoft,borderRadius:2,padding:'0 1px'}}>1</span>
             </button>
 
@@ -3200,19 +3200,19 @@ export default function App(){
 
             {/* Email current file (magic link) */}
             <button className="tool-btn" onClick={emailCurrentFile} disabled={!selectedFile} title="Email this file (magic link)" style={{color:C.inkSoft,padding:'5px 8px'}}>
-              <Mail size={16} style={{color:selectedFile?C.ochre:'#bbb'}}/>
+              <Mail size={20} style={{color:selectedFile?C.ochre:'#bbb'}}/>
             </button>
             {/* Email current page only */}
             <button className="tool-btn" onClick={emailCurrentPage} disabled={!selectedFile||!pdfBytes} title="Email current page only (magic link)" style={{color:C.inkSoft,padding:'5px 8px',position:'relative'}}>
-              <Mail size={16} style={{color:selectedFile?C.ochre:'#bbb'}}/>
+              <Mail size={20} style={{color:selectedFile?C.ochre:'#bbb'}}/>
               <span style={{position:'absolute',top:3,right:3,fontSize:8,fontWeight:700,color:C.ochreDeep,lineHeight:1,backgroundColor:C.ochreSoft,borderRadius:2,padding:'0 1px'}}>1</span>
             </button>
             <button className="tool-btn" onClick={()=>setShowMagicLinkSettings(true)} title="Magic link settings" style={{color:C.inkFaint,padding:'5px 6px'}}>
-              <Settings size={15}/>
+              <Settings size={19}/>
             </button>
             {/* Upload request inbox */}
             <button className="tool-btn" onClick={()=>setUploadInboxModal(true)} title="Client upload inbox" style={{color:C.inkFaint,padding:'5px 6px',position:'relative'}}>
-              <Inbox size={16} style={{color:uploadBadge>0?C.ochre:C.inkFaint}}/>
+              <Inbox size={20} style={{color:uploadBadge>0?C.ochre:C.inkFaint}}/>
               {uploadBadge>0&&<span style={{position:'absolute',top:2,right:2,fontSize:8,fontWeight:700,color:'#fff',lineHeight:'12px',backgroundColor:'#B5443A',borderRadius:6,padding:'0 3px',minWidth:12,textAlign:'center'}}>{uploadBadge}</span>}
             </button>
 
@@ -3226,7 +3226,7 @@ export default function App(){
               onClick={handleCombine}
               title={fileAbove?`Combine with: ${fileAbove.name}`:'Select a file to enable'}
             >
-              <Merge size={14} style={{color:fileAbove&&!combining?C.ochre:'#bbb'}}/>
+              <Merge size={18} style={{color:fileAbove&&!combining?C.ochre:'#bbb'}}/>
               {combining?'Combining…':'Combine with Above'}
             </button>
 
@@ -3240,11 +3240,11 @@ export default function App(){
             <div style={{width:1,height:18,backgroundColor:C.rule,margin:'0 4px'}}/>
 
             {/* Zoom */}
-            <button onClick={()=>setZoom(z=>Math.max(50,z-25))} className="tool-btn" style={{color:C.inkSoft,padding:'5px 6px'}}><ZoomOut size={15}/></button>
+            <button onClick={()=>setZoom(z=>Math.max(50,z-25))} className="tool-btn" style={{color:C.inkSoft,padding:'5px 6px'}}><ZoomOut size={19}/></button>
             <span className="mono" style={{fontSize:11,color:C.ink,fontWeight:600,minWidth:36,textAlign:'center'}}>{zoom}%</span>
-            <button onClick={()=>setZoom(z=>Math.min(200,z+25))} className="tool-btn" style={{color:C.inkSoft,padding:'5px 6px'}}><ZoomIn size={15}/></button>
-            <button onClick={fitToPage} title="Fit to page" className="tool-btn" style={{color:C.inkSoft,padding:'5px 6px'}}><Maximize2 size={15}/></button>
-            <button onClick={handleRotatePage} disabled={!pdfBytes||rotating} title="Rotate this page 90° and save" className="tool-btn" style={{color:pdfBytes?C.inkSoft:'#bbb',padding:'5px 6px'}}><RotateCw size={15}/></button>
+            <button onClick={()=>setZoom(z=>Math.min(200,z+25))} className="tool-btn" style={{color:C.inkSoft,padding:'5px 6px'}}><ZoomIn size={19}/></button>
+            <button onClick={fitToPage} title="Fit to page" className="tool-btn" style={{color:C.inkSoft,padding:'5px 6px'}}><Maximize2 size={19}/></button>
+            <button onClick={handleRotatePage} disabled={!pdfBytes||rotating} title="Rotate this page 90° and save" className="tool-btn" style={{color:pdfBytes?C.inkSoft:'#bbb',padding:'5px 6px'}}><RotateCw size={19}/></button>
 
             <div style={{width:1,height:18,backgroundColor:C.rule,margin:'0 4px'}}/>
 
