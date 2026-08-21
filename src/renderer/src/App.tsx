@@ -2829,17 +2829,17 @@ export default function App(){
         return(
           <div key={node.path}>
             <div
-              className="flex items-center gap-1.5 cursor-pointer"
-              style={{paddingLeft:10+depth*14,paddingTop:6,paddingBottom:6,paddingRight:8,color:isDrop?C.ochreDeep:C.inkMuted,backgroundColor:isDrop?'#F2DFA8':'transparent',borderLeft:isDrop?`4px solid ${C.ochre}`:'4px solid transparent',borderRadius:2,transition:'background-color 0.1s'}}
+              className="flex items-center gap-2 cursor-pointer"
+              style={{paddingLeft:8+depth*16,paddingTop:7,paddingBottom:7,paddingRight:8,color:isDrop?C.ochreDeep:C.inkMuted,backgroundColor:isDrop?'#F2DFA8':'transparent',borderLeft:isDrop?`4px solid ${C.ochre}`:'4px solid transparent',borderRadius:2,transition:'background-color 0.1s'}}
               onClick={()=>{toggleFolder(node.path);setActiveFolder({name:node.name,path:node.path})}}
               onContextMenu={e=>{e.preventDefault();e.stopPropagation();setCtxFolder({x:e.clientX,y:e.clientY,folder:node})}}
               onDragOver={e=>{e.preventDefault();e.stopPropagation();setDragOver(node.path)}}
               onDragLeave={e=>{e.stopPropagation();setDragOver(null)}}
               onDrop={e=>{e.preventDefault();e.stopPropagation();handleDrop(node.path)}}
             >
-              <span style={{fontSize:15,fontWeight:700,color:C.inkMuted,width:14,display:'inline-block',textAlign:'center',lineHeight:1,flexShrink:0}}>{open?'−':'+'}</span>
-              {open?<FolderOpen size={14} style={{color:isDrop?C.ochreDeep:C.ochre,flexShrink:0}}/>:<FolderClosed size={14} style={{color:isDrop?C.ochreDeep:C.ochre,flexShrink:0}}/>}
-              <span className="serif" title={node.name} style={{fontSize:14,fontWeight:600,flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{node.name}</span>
+              <span style={{fontSize:16,fontWeight:700,color:C.inkMuted,width:16,display:'inline-block',textAlign:'center',lineHeight:1,flexShrink:0}}>{open?'−':'+'}</span>
+              {open?<FolderOpen size={17} style={{color:isDrop?C.ochreDeep:C.ochre,flexShrink:0}}/>:<FolderClosed size={17} style={{color:isDrop?C.ochreDeep:C.ochre,flexShrink:0}}/>}
+              <span className="serif" title={node.name} style={{fontSize:15,fontWeight:600,flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{node.name}</span>
             </div>
             {open&&renderTree(node.children,depth+1)}
           </div>
@@ -2967,7 +2967,7 @@ export default function App(){
         @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
         .spin{animation:spin 0.7s linear infinite}
         .doc-shadow{box-shadow:0 1px 2px rgba(26,22,18,0.04),0 4px 12px rgba(26,22,18,0.06),0 16px 40px rgba(26,22,18,0.08)}
-        .tool-btn{display:flex;align-items:center;gap:6px;padding:5px 10px;border-radius:4px;font-size:12px;font-weight:500;cursor:pointer;border:1px solid transparent;transition:all 0.12s}
+        .tool-btn{display:flex;align-items:center;gap:7px;padding:6px 11px;border-radius:6px;font-size:13px;font-weight:500;cursor:pointer;border:1px solid transparent;transition:all 0.12s}
         .tool-btn:hover{background:rgba(168,119,31,0.08);border-color:${C.ruleSoft}}
         .tool-btn:disabled{opacity:0.35;cursor:not-allowed}
         .drag-region{-webkit-app-region:drag}
@@ -3173,7 +3173,7 @@ export default function App(){
           <div className="flex items-center gap-1 px-3 py-1.5 flex-shrink-0" style={{backgroundColor:C.paperDeep,borderBottom:`1px solid ${C.rule}`}}>
             {/* Scan */}
             <button className="tool-btn sans" style={{color:C.inkSoft,opacity:scanning?0.5:1}} onClick={()=>{ if(!scanning) setShowScanModal(true) }} title="Scan document">
-              <ScanLine size={14} style={{color:C.ochre}}/> Scan
+              <ScanLine size={16} style={{color:C.ochre}}/> Scan
             </button>
             {scanning&&(
               <span className="sans pulse" style={{fontSize:11,color:C.ochre}}>
@@ -3181,18 +3181,18 @@ export default function App(){
               </span>
             )}
             <button className="tool-btn sans" style={{color:C.inkFaint,padding:'5px 6px'}} onClick={()=>setShowScanSettings(true)} title="Scanner settings">
-              <Settings size={12}/>
+              <Settings size={15}/>
             </button>
 
             <div style={{width:1,height:18,backgroundColor:C.rule,margin:'0 4px'}}/>
 
             {/* Print full doc */}
             <button className="tool-btn" onClick={handlePrint} disabled={!selectedFile} title="Print document" style={{color:C.inkSoft,padding:'5px 8px'}}>
-              <Printer size={14} style={{color:selectedFile?C.ochre:'#bbb'}}/>
+              <Printer size={16} style={{color:selectedFile?C.ochre:'#bbb'}}/>
             </button>
             {/* Print current page */}
             <button className="tool-btn" onClick={handlePrintPage} disabled={!selectedFile||!pdfBytes} title="Print current page" style={{color:C.inkSoft,padding:'5px 8px',position:'relative'}}>
-              <Printer size={14} style={{color:selectedFile?C.ochre:'#bbb'}}/>
+              <Printer size={16} style={{color:selectedFile?C.ochre:'#bbb'}}/>
               <span style={{position:'absolute',top:3,right:3,fontSize:8,fontWeight:700,color:C.ochreDeep,lineHeight:1,backgroundColor:C.ochreSoft,borderRadius:2,padding:'0 1px'}}>1</span>
             </button>
 
@@ -3200,19 +3200,19 @@ export default function App(){
 
             {/* Email current file (magic link) */}
             <button className="tool-btn" onClick={emailCurrentFile} disabled={!selectedFile} title="Email this file (magic link)" style={{color:C.inkSoft,padding:'5px 8px'}}>
-              <Mail size={14} style={{color:selectedFile?C.ochre:'#bbb'}}/>
+              <Mail size={16} style={{color:selectedFile?C.ochre:'#bbb'}}/>
             </button>
             {/* Email current page only */}
             <button className="tool-btn" onClick={emailCurrentPage} disabled={!selectedFile||!pdfBytes} title="Email current page only (magic link)" style={{color:C.inkSoft,padding:'5px 8px',position:'relative'}}>
-              <Mail size={14} style={{color:selectedFile?C.ochre:'#bbb'}}/>
+              <Mail size={16} style={{color:selectedFile?C.ochre:'#bbb'}}/>
               <span style={{position:'absolute',top:3,right:3,fontSize:8,fontWeight:700,color:C.ochreDeep,lineHeight:1,backgroundColor:C.ochreSoft,borderRadius:2,padding:'0 1px'}}>1</span>
             </button>
             <button className="tool-btn" onClick={()=>setShowMagicLinkSettings(true)} title="Magic link settings" style={{color:C.inkFaint,padding:'5px 6px'}}>
-              <Settings size={12}/>
+              <Settings size={15}/>
             </button>
             {/* Upload request inbox */}
             <button className="tool-btn" onClick={()=>setUploadInboxModal(true)} title="Client upload inbox" style={{color:C.inkFaint,padding:'5px 6px',position:'relative'}}>
-              <Inbox size={13} style={{color:uploadBadge>0?C.ochre:C.inkFaint}}/>
+              <Inbox size={16} style={{color:uploadBadge>0?C.ochre:C.inkFaint}}/>
               {uploadBadge>0&&<span style={{position:'absolute',top:2,right:2,fontSize:8,fontWeight:700,color:'#fff',lineHeight:'12px',backgroundColor:'#B5443A',borderRadius:6,padding:'0 3px',minWidth:12,textAlign:'center'}}>{uploadBadge}</span>}
             </button>
 
@@ -3240,11 +3240,11 @@ export default function App(){
             <div style={{width:1,height:18,backgroundColor:C.rule,margin:'0 4px'}}/>
 
             {/* Zoom */}
-            <button onClick={()=>setZoom(z=>Math.max(50,z-25))} className="tool-btn" style={{color:C.inkSoft,padding:'5px 6px'}}><ZoomOut size={13}/></button>
+            <button onClick={()=>setZoom(z=>Math.max(50,z-25))} className="tool-btn" style={{color:C.inkSoft,padding:'5px 6px'}}><ZoomOut size={15}/></button>
             <span className="mono" style={{fontSize:11,color:C.ink,fontWeight:600,minWidth:36,textAlign:'center'}}>{zoom}%</span>
-            <button onClick={()=>setZoom(z=>Math.min(200,z+25))} className="tool-btn" style={{color:C.inkSoft,padding:'5px 6px'}}><ZoomIn size={13}/></button>
-            <button onClick={fitToPage} title="Fit to page" className="tool-btn" style={{color:C.inkSoft,padding:'5px 6px'}}><Maximize2 size={13}/></button>
-            <button onClick={handleRotatePage} disabled={!pdfBytes||rotating} title="Rotate this page 90° and save" className="tool-btn" style={{color:pdfBytes?C.inkSoft:'#bbb',padding:'5px 6px'}}><RotateCw size={13}/></button>
+            <button onClick={()=>setZoom(z=>Math.min(200,z+25))} className="tool-btn" style={{color:C.inkSoft,padding:'5px 6px'}}><ZoomIn size={15}/></button>
+            <button onClick={fitToPage} title="Fit to page" className="tool-btn" style={{color:C.inkSoft,padding:'5px 6px'}}><Maximize2 size={15}/></button>
+            <button onClick={handleRotatePage} disabled={!pdfBytes||rotating} title="Rotate this page 90° and save" className="tool-btn" style={{color:pdfBytes?C.inkSoft:'#bbb',padding:'5px 6px'}}><RotateCw size={15}/></button>
 
             <div style={{width:1,height:18,backgroundColor:C.rule,margin:'0 4px'}}/>
 
