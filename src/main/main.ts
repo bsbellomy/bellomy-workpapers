@@ -466,15 +466,24 @@ autoUpdater.on('update-downloaded', () => {
   mainWin?.webContents.send('update:downloaded')
 })
 
-const TAXDOME_EXE = 'C:\\Program Files (x86)\\TaxDome\\TaxDome.exe'
+// TaxDome has shipped under two install paths over time: the current
+// "TaxDomeApp" (64-bit, C:\Program Files) and the older "TaxDome"
+// (C:\Program Files (x86)). Prefer the newer install; fall back to the old
+// path on any machine still running it. Both run as TaxDome.exe, so the
+// "already running" check below works for either.
+const TAXDOME_EXES = [
+  'C:\\Program Files\\TaxDomeApp\\TaxDome.exe',
+  'C:\\Program Files (x86)\\TaxDome\\TaxDome.exe',
+]
 
 async function ensureTaxDomeRunning(): Promise<void> {
   try {
-    if (!fs.existsSync(TAXDOME_EXE)) return // not installed on this machine
+    const exe = TAXDOME_EXES.find(p => fs.existsSync(p))
+    if (!exe) return // not installed on this machine
     const { execSync: exec } = await import('child_process')
     const list = exec('tasklist /FI "IMAGENAME eq TaxDome.exe" /FO CSV /NH', { encoding: 'utf8', timeout: 5000 })
     if (list.toLowerCase().includes('taxdome.exe')) return // already running
-    const child = spawn(TAXDOME_EXE, [], { detached: true, stdio: 'ignore' })
+    const child = spawn(exe, [], { detached: true, stdio: 'ignore' })
     child.on('error', () => {})
     child.unref()
     await new Promise(resolve => setTimeout(resolve, 4000)) // wait for drive to mount
