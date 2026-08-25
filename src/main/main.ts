@@ -466,28 +466,58 @@ autoUpdater.on('update-downloaded', () => {
   mainWin?.webContents.send('update:downloaded')
 })
 
-// TaxDome has shipped under two install paths over time: the current
-// "TaxDomeApp" (64-bit, C:\Program Files) and the older "TaxDome"
-// (C:\Program Files (x86)). Prefer the newer install; fall back to the old
-// path on any machine still running it. Both run as TaxDome.exe, so the
-// "already running" check below works for either.
+// TaxDome has shipped under several install paths over time. Prefer the newer
+// "TaxDomeApp" (Program Files) and fall back to older/per-user locations. Both
+// run as TaxDome.exe, so the "already running" check works for either.
+const LOCALAPPDATA = process.env.LOCALAPPDATA || 'C:\\__no_localappdata__'
 const TAXDOME_EXES = [
   'C:\\Program Files\\TaxDomeApp\\TaxDome.exe',
+  'C:\\Program Files (x86)\\TaxDomeApp\\TaxDome.exe',
   'C:\\Program Files (x86)\\TaxDome\\TaxDome.exe',
+  path.join(LOCALAPPDATA, 'Programs', 'TaxDomeApp', 'TaxDome.exe'),
+  path.join(LOCALAPPDATA, 'TaxDomeApp', 'TaxDome.exe'),
 ]
+
+// Append a line to %APPDATA%\bellomy-workpapers\taxdome-launch.log. The whole
+// launch step is best-effort and used to swallow every error silently, which
+// made "it didn't launch TaxDome" impossible to diagnose. Now it records what
+// it found and did so a single startup on the affected machine is diagnosable.
+function taxDomeLog(msg: string): void {
+  try {
+    fs.appendFileSync(path.join(app.getPath('userData'), 'taxdome-launch.log'), `[${new Date().toISOString()}] ${msg}\n`)
+  } catch { /* logging must never throw */ }
+}
 
 async function ensureTaxDomeRunning(): Promise<void> {
   try {
-    const exe = TAXDOME_EXES.find(p => fs.existsSync(p))
-    if (!exe) return // not installed on this machine
-    const { execSync: exec } = await import('child_process')
-    const list = exec('tasklist /FI "IMAGENAME eq TaxDome.exe" /FO CSV /NH', { encoding: 'utf8', timeout: 5000 })
-    if (list.toLowerCase().includes('taxdome.exe')) return // already running
-    const child = spawn(exe, [], { detached: true, stdio: 'ignore' })
-    child.on('error', () => {})
-    child.unref()
+    // Already running (any install)? Then the drive is up — nothing to do.
+    let running = false
+    try {
+      const { execSync } = await import('child_process')
+      const list = execSync('tasklist /FI "IMAGENAME eq TaxDome.exe" /FO CSV /NH', { encoding: 'utf8', timeout: 5000 })
+      running = list.toLowerCase().includes('taxdome.exe')
+    } catch (e) { taxDomeLog('tasklist check failed (treating as not running): ' + String(e)) }
+    if (running) { taxDomeLog('TaxDome already running — no launch needed'); return }
+
+    const exe = TAXDOME_EXES.find(p => { try { return fs.existsSync(p) } catch { return false } })
+    if (!exe) { taxDomeLog('TaxDome not found at any known path. Checked: ' + TAXDOME_EXES.join(' | ')); return }
+
+    taxDomeLog('Launching TaxDome: ' + exe)
+    let launched = false
+    try {
+      const err = await shell.openPath(exe) // '' on success, else an error message
+      if (err) { taxDomeLog('shell.openPath failed: ' + err) } else { launched = true; taxDomeLog('shell.openPath OK') }
+    } catch (e) { taxDomeLog('shell.openPath threw: ' + String(e)) }
+    if (!launched) {
+      try {
+        const child = spawn(exe, [], { detached: true, stdio: 'ignore' })
+        child.on('error', (e) => taxDomeLog('spawn error: ' + e.message))
+        child.unref()
+        taxDomeLog('spawn fallback issued (pid ' + (child.pid ?? '?') + ')')
+      } catch (e) { taxDomeLog('spawn threw: ' + String(e)) }
+    }
     await new Promise(resolve => setTimeout(resolve, 4000)) // wait for drive to mount
-  } catch { /* never block app startup */ }
+  } catch (e) { taxDomeLog('ensureTaxDomeRunning error: ' + String(e)) }
 }
 
 app.whenReady().then(async () => {
