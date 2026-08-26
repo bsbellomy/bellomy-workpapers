@@ -1091,12 +1091,27 @@ ipcMain.handle('fs:findTaxForms', async (_e, clientPath: string) => {
 })
 
 // ── Hoist folder: copy a folder's full contents to a temp "cabinet" ──────────
+// PowerShell Copy-Item — fs.cpSync/copyFile throw "UNKNOWN" on TaxDome's mapped
+// virtual drive (same reason moves use PowerShell). Handles files and, with
+// recursive, whole folder trees.
+async function psCopyItem(src: string, dest: string, recursive: boolean): Promise<void> {
+  const { execFile } = await import('child_process')
+  const rec = recursive ? ' -Recurse' : ''
+  const script = `Copy-Item -LiteralPath '${src.replace(/'/g, "''")}' -Destination '${dest.replace(/'/g, "''")}'${rec} -Force`
+  await new Promise<void>((resolve, reject) => {
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], (err, _out, stderr) => {
+      if (err || (stderr && stderr.trim())) reject(new Error(stderr?.trim() || String(err)))
+      else resolve()
+    })
+  })
+}
+
 ipcMain.handle('fs:hoistFolder', async (_e, folderPath: string) => {
   try {
     const id = crypto.randomUUID()
     const dest = path.join(app.getPath('temp'), 'bellomy-hoist', id, path.basename(folderPath))
     fs.mkdirSync(path.dirname(dest), { recursive: true })
-    fs.cpSync(folderPath, dest, { recursive: true })
+    await psCopyItem(folderPath, dest, true)
     return { ok: true, path: dest }
   } catch (e: unknown) {
     return { ok: false, error: String(e) }
@@ -1115,7 +1130,7 @@ ipcMain.handle('fs:unhoistFolder', async (_e, hoistPath: string, originalFolder:
 
     // Copy back any files/folders that were newly created in the hoisted
     // copy and don't exist in the original folder
-    function copyNewEntries(srcDir: string, destDir: string) {
+    async function copyNewEntries(srcDir: string, destDir: string): Promise<void> {
       let entries: fs.Dirent[]
       try { entries = fs.readdirSync(srcDir, { withFileTypes: true }) } catch { return }
       for (const e of entries) {
@@ -1123,17 +1138,17 @@ ipcMain.handle('fs:unhoistFolder', async (_e, hoistPath: string, originalFolder:
         const destFull = path.join(destDir, e.name)
         if (e.isDirectory()) {
           if (fs.existsSync(destFull)) {
-            copyNewEntries(srcFull, destFull)
+            await copyNewEntries(srcFull, destFull)
           } else {
-            fs.cpSync(srcFull, destFull, { recursive: true })
+            await psCopyItem(srcFull, destFull, true) // copies back onto the TaxDome drive
           }
         } else if (!fs.existsSync(destFull)) {
           fs.mkdirSync(destDir, { recursive: true })
-          fs.cpSync(srcFull, destFull)
+          await psCopyItem(srcFull, destFull, false)
         }
       }
     }
-    if (originalFolder) copyNewEntries(resolved, originalFolder)
+    if (originalFolder) await copyNewEntries(resolved, originalFolder)
 
     // Remove the per-hoist parent directory (one level up from the copied folder)
     const hoistDir = path.dirname(resolved)
