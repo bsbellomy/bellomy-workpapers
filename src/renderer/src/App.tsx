@@ -23,7 +23,8 @@ function isPdfFile(name:string):boolean { return fileExt(name)==='pdf' }
 function isWordFile(name:string):boolean { return fileExt(name)==='doc'||fileExt(name)==='docx' }
 function isExcelFile(name:string):boolean { return fileExt(name)==='xls'||fileExt(name)==='xlsx' }
 function isImageFile(name:string):boolean { const e=fileExt(name); return ['jpg','jpeg','png','gif','bmp','webp'].includes(e) }
-function needsExternalApp(name:string):boolean { return !isPdfFile(name)&&!isImageFile(name)&&fileExt(name)!=='txt' }
+function isHtmlFile(name:string):boolean { const e=fileExt(name); return e==='html'||e==='htm' }
+function needsExternalApp(name:string):boolean { return !isPdfFile(name)&&!isImageFile(name)&&!isHtmlFile(name)&&fileExt(name)!=='txt' }
 function initials(name:string):string {
   const parts=name.trim().split(/\s+/).filter(Boolean)
   if(parts.length===0) return ''
@@ -1984,6 +1985,7 @@ export default function App(){
   const [selectedFile,setSelectedFile]     = useState<DocFile|null>(null)
   const [pdfBytes,setPdfBytes]             = useState<ArrayBuffer|null>(null)
   const [imageUrl,setImageUrl]             = useState<string|null>(null)
+  const [htmlContent,setHtmlContent]       = useState<string|null>(null)
   const [annotations,setAnnotations]       = useState<Annotations>({tickmarks:[],signoffs:[]})
   const [pageCount,setPageCount]           = useState(1)
   const [currentPage,setCurrentPage]       = useState(1)
@@ -2205,6 +2207,7 @@ export default function App(){
       // Unload the viewer — without this the effect returned early and left the
       // previous PDF on screen because pdfBytes/annotations were never reset.
       setPdfBytes(null)
+      setHtmlContent(null)
       setAnnotations({tickmarks:[],signoffs:[]})
       setNoteText(null); setNoteLoaded(false)
       return
@@ -2216,9 +2219,15 @@ export default function App(){
     setCurrentPage(startPage)
     pdfScrollRef.current?.scrollTo({top:0})
     setAnnotations({tickmarks:[],signoffs:[]})
+    setHtmlContent(null)
     if(fileExt(selectedFile.name)==='txt'){
       setPdfBytes(null); setNoteText(null); setNoteLoaded(false)
       api.readTextFile(selectedFile.path).then(r=>{ setNoteText(r.ok?(r.content??''):''); setNoteLoaded(true) })
+      return
+    }
+    if(isHtmlFile(selectedFile.name)){
+      setPdfBytes(null); setNoteText(null); setNoteLoaded(false)
+      api.readTextFile(selectedFile.path).then(r=>setHtmlContent(r.ok?(r.content??''):''))
       return
     }
     setNoteText(null); setNoteLoaded(false)
@@ -3279,6 +3288,18 @@ export default function App(){
                   <div className="mx-auto p-4" style={{width:'fit-content',maxWidth:'100%'}}>
                     {imageUrl
                       ?<img src={imageUrl} alt={selectedFile.name} style={{maxWidth:'100%',display:'block',borderRadius:2,boxShadow:'0 4px 24px rgba(26,22,18,0.3)'}}/>
+                      :<div style={{color:C.inkFaint,fontSize:12,fontFamily:'Georgia,serif'}}>Loading…</div>
+                    }
+                  </div>
+                ):selectedFile&&isHtmlFile(selectedFile.name)?(
+                  <div className="mx-auto" style={{width:'100%',maxWidth:900,height:'100%'}}>
+                    {htmlContent!==null
+                      ?<iframe
+                        title={selectedFile.name}
+                        srcDoc={htmlContent}
+                        sandbox=""
+                        style={{width:'100%',height:'100%',border:'none',borderRadius:4,backgroundColor:'#fff',boxShadow:'0 4px 24px rgba(26,22,18,0.2)'}}
+                      />
                       :<div style={{color:C.inkFaint,fontSize:12,fontFamily:'Georgia,serif'}}>Loading…</div>
                     }
                   </div>
