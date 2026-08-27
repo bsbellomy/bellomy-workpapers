@@ -24,6 +24,16 @@ function isWordFile(name:string):boolean { return fileExt(name)==='doc'||fileExt
 function isExcelFile(name:string):boolean { return fileExt(name)==='xls'||fileExt(name)==='xlsx' }
 function isImageFile(name:string):boolean { const e=fileExt(name); return ['jpg','jpeg','png','gif','bmp','webp'].includes(e) }
 function isHtmlFile(name:string):boolean { const e=fileExt(name); return e==='html'||e==='htm' }
+// Inject a strict CSP so the sandboxed HTML can run its own scripts (charts,
+// interactivity) but can NEVER exfiltrate client data: no fetch/XHR/WebSocket
+// (connect-src 'none'), no external image beacons (img-src data:/blob: only),
+// no form posts. Inline + https scripts/styles are allowed so CDN chart libs work.
+function injectHtmlCsp(html:string):string {
+  const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' https:; style-src 'unsafe-inline' https:; img-src data: blob:; font-src data: https:; media-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'">`
+  if (/<head[^>]*>/i.test(html)) return html.replace(/<head[^>]*>/i, m => m + csp)
+  if (/<html[^>]*>/i.test(html)) return html.replace(/<html[^>]*>/i, m => m + '<head>' + csp + '</head>')
+  return `<!doctype html><head>${csp}</head>` + html
+}
 function needsExternalApp(name:string):boolean { return !isPdfFile(name)&&!isImageFile(name)&&!isHtmlFile(name)&&fileExt(name)!=='txt' }
 function initials(name:string):string {
   const parts=name.trim().split(/\s+/).filter(Boolean)
@@ -3296,8 +3306,8 @@ export default function App(){
                     {htmlContent!==null
                       ?<iframe
                         title={selectedFile.name}
-                        srcDoc={htmlContent}
-                        sandbox=""
+                        srcDoc={injectHtmlCsp(htmlContent)}
+                        sandbox="allow-scripts"
                         style={{width:'100%',height:'100%',border:'none',borderRadius:4,backgroundColor:'#fff',boxShadow:'0 4px 24px rgba(26,22,18,0.2)'}}
                       />
                       :<div style={{color:C.inkFaint,fontSize:12,fontFamily:'Georgia,serif'}}>Loading…</div>
