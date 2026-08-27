@@ -214,9 +214,30 @@ ipcMain.handle('fs:createUploadRequest', async (_e, label: string, instructions:
   }
 })
 
+// Upload-request folderPaths bake in whatever drive letter was current when the
+// request was created. TaxDome can remap the drive (e.g. Z: -> T:), so rewrite
+// the drive letter of any stored path to the client root's CURRENT drive.
+function remapDrive(p: string, rootPath: string): string {
+  const rd = (rootPath.match(/^[A-Za-z]:/) || [])[0]
+  const pd = (p.match(/^[A-Za-z]:/) || [])[0]
+  if (rd && pd && rd.toUpperCase() !== pd.toUpperCase()) return rd + p.slice(pd.length)
+  return p
+}
+
+type UploadReq = { label: string; folderPath: string; url: string; createdAt: string; expiresDays: number }
+
 ipcMain.handle('fs:listUploadRequests', () => {
   const cfg = readConfig()
-  return cfg.uploadRequests ?? {}
+  const reqs = (cfg.uploadRequests as Record<string, UploadReq>) ?? {}
+  const root = (cfg.rootPath as string) || currentRootPath
+  let changed = false
+  for (const t of Object.keys(reqs)) {
+    const fixed = remapDrive(reqs[t].folderPath, root)
+    if (fixed !== reqs[t].folderPath) { reqs[t].folderPath = fixed; changed = true }
+  }
+  // Persist the migration so existing requests are corrected on disk (display + save)
+  if (changed) { try { fs.writeFileSync(configPath(), JSON.stringify({ ...cfg, uploadRequests: reqs }, null, 2), 'utf8') } catch { /* best effort */ } }
+  return reqs
 })
 
 ipcMain.handle('fs:checkUploads', async (_e, token: string) => {
@@ -257,7 +278,7 @@ ipcMain.handle('fs:downloadAndSaveUpload', async (_e, token: string, filename: s
       return { ok: false, error: msg }
     }
     const buf = Buffer.from(await resp.arrayBuffer())
-    const dest = path.join(req.folderPath, filename)
+    const dest = path.join(remapDrive(req.folderPath, (cfg.rootPath as string) || currentRootPath), filename)
     fs.writeFileSync(dest, buf)
     // Delete from R2 after saving
     fetch(`${workerUrl}/delete-upload/${token}/${encodeURIComponent(filename)}`, {
