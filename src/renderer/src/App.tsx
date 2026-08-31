@@ -13,7 +13,8 @@ interface Tickmark  { id:string; page:number; x:number; y:number; type:string; n
 interface Signoff   { page:number; role:string; author:string; signedAt:string }
 interface TapeStamp { id:string; page:number; x:number; y:number; entries:{value:number}[]; author:string; createdAt:string }
 interface Highlight { id:string; page:number; x:number; y:number; w:number; h:number; author:string; createdAt:string }
-interface Annotations { tickmarks:Tickmark[]; signoffs:Signoff[]; tapeStamps?:TapeStamp[]; highlights?:Highlight[]; addedAt?:string; addedBy?:string|null }
+interface TextNote  { id:string; page:number; x:number; y:number; text:string; author:string; createdAt:string }
+interface Annotations { tickmarks:Tickmark[]; signoffs:Signoff[]; tapeStamps?:TapeStamp[]; highlights?:Highlight[]; textNotes?:TextNote[]; addedAt?:string; addedBy?:string|null }
 interface DocFile  { name:string; type:'file';   path:string; annotations:Annotations }
 interface DocFolder{ name:string; type:'folder'; path:string; children:(DocFile|DocFolder)[] }
 interface Bookmark { title:string; page:number|null; items:Bookmark[] }
@@ -816,15 +817,21 @@ interface PdfViewerProps {
   onMoveTapeStamp:(id:string,x:number,y:number)=>void
   onAddHighlight:(h:Omit<Highlight,'id'|'author'|'createdAt'>)=>void
   onDeleteHighlight:(id:string)=>void
+  onAddTextNote:(n:Omit<TextNote,'id'|'author'|'createdAt'>)=>string
+  onUpdateTextNote:(id:string,text:string)=>void
+  onMoveTextNote:(id:string,x:number,y:number)=>void
+  onDeleteTextNote:(id:string)=>void
   author:string
 }
 
-function PdfViewer({pdfBytes,zoom,page,onPageCount,onPageSize,annotations,activeMark,onAddTickmark,onMoveTickmark,onAddTapeStamp,onDeleteTapeStamp,onMoveTapeStamp,onAddHighlight,onDeleteHighlight,author}:PdfViewerProps){
+function PdfViewer({pdfBytes,zoom,page,onPageCount,onPageSize,annotations,activeMark,onAddTickmark,onMoveTickmark,onAddTapeStamp,onDeleteTapeStamp,onMoveTapeStamp,onAddHighlight,onDeleteHighlight,onAddTextNote,onUpdateTextNote,onMoveTextNote,onDeleteTextNote,author}:PdfViewerProps){
   const [dragStamp,setDragStamp]=useState<{id:string;x:number;y:number}|null>(null)
   const [dragTick,setDragTick]=useState<{id:string;x:number;y:number}|null>(null)
+  const [dragNote,setDragNote]=useState<{id:string;x:number;y:number}|null>(null)
+  const [justAddedNoteId,setJustAddedNoteId]=useState<string|null>(null)
   const [highlightMode,setHighlightMode]=useState(false)
   const [drawRect,setDrawRect]=useState<{x:number;y:number;w:number;h:number}|null>(null)
-  const [ctxMenu,setCtxMenu]=useState<{x:number;y:number}|null>(null)
+  const [ctxMenu,setCtxMenu]=useState<{x:number;y:number;px:number;py:number}|null>(null)
   const [rulerMode,setRulerMode]=useState(false)
   const [rulerY,setRulerY]=useState<number|null>(null)
   const canvasRef=useRef<HTMLCanvasElement>(null)
@@ -973,7 +980,27 @@ function PdfViewer({pdfBytes,zoom,page,onPageCount,onPageSize,annotations,active
   function handleContextMenu(e:React.MouseEvent<HTMLDivElement>){
     e.preventDefault()
     e.stopPropagation()
-    setCtxMenu({x:e.clientX,y:e.clientY})
+    const c=coordsFromEvent(e)
+    setCtxMenu({x:e.clientX,y:e.clientY,px:c?.x??50,py:c?.y??50})
+  }
+
+  function startDragNote(e:React.MouseEvent,n:TextNote){
+    e.stopPropagation()
+    e.preventDefault()
+    const canvas=canvasRef.current; if(!canvas) return
+    const rect=canvas.getBoundingClientRect()
+    const clamp=(v:number)=>Math.max(0,Math.min(100,v))
+    function posFrom(ev:MouseEvent){ return {x:clamp(((ev.clientX-rect.left)/rect.width)*100), y:clamp(((ev.clientY-rect.top)/rect.height)*100)} }
+    function onMove(ev:MouseEvent){ setDragNote({id:n.id,...posFrom(ev)}) }
+    function onUp(ev:MouseEvent){
+      window.removeEventListener('mousemove',onMove)
+      window.removeEventListener('mouseup',onUp)
+      const p=posFrom(ev)
+      onMoveTextNote(n.id,p.x,p.y)
+      setDragNote(null)
+    }
+    window.addEventListener('mousemove',onMove)
+    window.addEventListener('mouseup',onUp)
   }
 
   function handleDrop(e:React.DragEvent<HTMLDivElement>){
@@ -993,6 +1020,7 @@ function PdfViewer({pdfBytes,zoom,page,onPageCount,onPageSize,annotations,active
   const pageAnns=annotations.tickmarks.filter(t=>t.page===page)
   const pageStamps=(annotations.tapeStamps??[]).filter(s=>s.page===page)
   const pageHighlights=(annotations.highlights??[]).filter(h=>h.page===page)
+  const pageNotes=(annotations.textNotes??[]).filter(n=>n.page===page)
   const checkDefs:{[k:string]:{color:string}}=Object.fromEntries(CHECKS.map(c=>[c.id,{color:c.color}]))
 
   return(
@@ -1045,6 +1073,11 @@ function PdfViewer({pdfBytes,zoom,page,onPageCount,onPageSize,annotations,active
           onMouseDown={e=>e.stopPropagation()}
           onMouseLeave={()=>setCtxMenu(null)}
         >
+          <button className="w-full text-left px-3 py-2 sans" style={{fontSize:12,color:C.ink,borderBottom:`1px solid ${C.ruleSoft}`}}
+            onClick={()=>{ if(ctxMenu){ const id=onAddTextNote({page,x:ctxMenu.px,y:ctxMenu.py,text:''}); setJustAddedNoteId(id) } setCtxMenu(null) }}
+          >
+            📝 Add note here
+          </button>
           <button className="w-full text-left px-3 py-2 sans" style={{fontSize:12,color:C.ink,backgroundColor:highlightMode?C.ochre+'22':'transparent'}}
             onClick={()=>{setHighlightMode(m=>{const next=!m;if(next)setRulerMode(false);return next});setCtxMenu(null)}}
           >
@@ -1115,6 +1148,32 @@ function PdfViewer({pdfBytes,zoom,page,onPageCount,onPageSize,annotations,active
                 <span style={{color:'#7A5615'}}>Σ</span>
                 <span style={{color:'#1A1612'}}>{fmt(total)}</span>
               </div>
+            </div>
+          </div>
+        )
+      })}
+      {pageNotes.map(n=>{
+        const pos=dragNote&&dragNote.id===n.id?dragNote:n
+        return(
+          <div key={n.id} className="absolute" style={{left:`${pos.x}%`,top:`${pos.y}%`,width:194,zIndex:22}}
+            onClick={e=>e.stopPropagation()}
+            onMouseDown={e=>e.stopPropagation()}
+          >
+            <div style={{backgroundColor:'#FEF3C7',border:'1px solid #E4C766',borderRadius:5,boxShadow:'0 3px 12px rgba(26,22,18,0.22)',overflow:'hidden'}}>
+              <div onMouseDown={e=>startDragNote(e,n)} title={`${n.author} · ${new Date(n.createdAt).toLocaleDateString()}`}
+                style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'2px 4px 2px 7px',backgroundColor:'#F6E5A6',cursor:'grab',userSelect:'none'}}>
+                <span style={{fontSize:9,fontWeight:700,letterSpacing:0.5,color:'#8A6D1A'}}>NOTE</span>
+                <button onMouseDown={e=>e.stopPropagation()} onClick={()=>onDeleteTextNote(n.id)} title="Delete note"
+                  style={{color:'#B5443A',fontSize:15,lineHeight:1,background:'none',border:'none',cursor:'pointer',padding:'0 2px'}}>×</button>
+              </div>
+              <textarea
+                defaultValue={n.text}
+                autoFocus={n.id===justAddedNoteId}
+                placeholder="Type a note…"
+                onMouseDown={e=>e.stopPropagation()}
+                onBlur={e=>onUpdateTextNote(n.id,e.target.value)}
+                style={{width:'100%',minHeight:58,resize:'vertical',border:'none',outline:'none',backgroundColor:'transparent',padding:'6px 8px',fontSize:12,lineHeight:1.45,fontFamily:'Inter,sans-serif',color:'#3A2F10',boxSizing:'border-box',display:'block'}}
+              />
             </div>
           </div>
         )
@@ -2339,6 +2398,40 @@ export default function App(){
     })
   },[selectedFile])
 
+  const addTextNote=useCallback((partial:Omit<TextNote,'id'|'author'|'createdAt'>)=>{
+    const n:TextNote={...partial,id:crypto.randomUUID(),author,createdAt:new Date().toISOString()}
+    setAnnotations(prev=>{
+      const next={...prev,textNotes:[...(prev.textNotes??[]),n]}
+      if(api&&selectedFile) api.saveAnnotations(selectedFile.path,next)
+      return next
+    })
+    return n.id
+  },[author,selectedFile])
+
+  const updateTextNote=useCallback((id:string,text:string)=>{
+    setAnnotations(prev=>{
+      const next={...prev,textNotes:(prev.textNotes??[]).map(n=>n.id===id?{...n,text}:n)}
+      if(api&&selectedFile) api.saveAnnotations(selectedFile.path,next)
+      return next
+    })
+  },[selectedFile])
+
+  const moveTextNote=useCallback((id:string,x:number,y:number)=>{
+    setAnnotations(prev=>{
+      const next={...prev,textNotes:(prev.textNotes??[]).map(n=>n.id===id?{...n,x,y}:n)}
+      if(api&&selectedFile) api.saveAnnotations(selectedFile.path,next)
+      return next
+    })
+  },[selectedFile])
+
+  const deleteTextNote=useCallback((id:string)=>{
+    setAnnotations(prev=>{
+      const next={...prev,textNotes:(prev.textNotes??[]).filter(n=>n.id!==id)}
+      if(api&&selectedFile) api.saveAnnotations(selectedFile.path,next)
+      return next
+    })
+  },[selectedFile])
+
   // Keyboard shortcuts
   useEffect(()=>{
     function onKey(e:KeyboardEvent){
@@ -2657,6 +2750,45 @@ export default function App(){
       alert('Rotate failed: '+String(e))
     }finally{
       setRotating(false)
+    }
+  }
+
+  const [deleting,setDeleting]=useState(false)
+  async function handleDeletePage(){
+    if(!api||!selectedFile||!pdfBytes||deleting) return
+    if(pageCount<=1){ alert('This file has only one page — delete the whole file instead.'); return }
+    if(!window.confirm(`Delete page ${currentPage} of ${pageCount}?\n\nThis permanently removes it from the file.`)) return
+    setDeleting(true)
+    try{
+      const {PDFDocument}=await import('pdf-lib')
+      const fresh=await api.readPdf(selectedFile.path)
+      if(!fresh){ alert('Could not read PDF.'); return }
+      const doc=await PDFDocument.load(fresh)
+      const removed=currentPage
+      doc.removePage(removed-1)
+      const saved=await doc.save({useObjectStreams:false})
+      const buf=saved.buffer.slice(saved.byteOffset,saved.byteOffset+saved.byteLength) as ArrayBuffer
+      const r=await api.savePdf(selectedFile.path,buf)
+      if(!r.ok){ alert('Could not save: '+(r.error??'Unknown error')); return }
+      // Reindex annotations: drop marks on the removed page, shift later pages down 1
+      setAnnotations(prev=>{
+        const shift=<T extends {page:number}>(arr:T[]|undefined)=>arr?arr.filter(a=>a.page!==removed).map(a=>a.page>removed?{...a,page:a.page-1}:a):arr
+        const next={...prev,
+          tickmarks:shift(prev.tickmarks)!,
+          signoffs:shift(prev.signoffs)!,
+          tapeStamps:shift(prev.tapeStamps),
+          highlights:shift(prev.highlights),
+          textNotes:shift(prev.textNotes),
+        }
+        if(api&&selectedFile) api.saveAnnotations(selectedFile.path,next)
+        return next
+      })
+      setPdfBytes(buf)
+      setCurrentPage(p=>Math.min(p,pageCount-1))
+    }catch(e){
+      alert('Delete page failed: '+String(e))
+    }finally{
+      setDeleting(false)
     }
   }
 
@@ -3264,6 +3396,7 @@ export default function App(){
             <button onClick={()=>setZoom(z=>Math.min(200,z+25))} className="tool-btn" style={{color:C.inkSoft,padding:'5px 6px'}}><ZoomIn size={19}/></button>
             <button onClick={fitToPage} title="Fit to page" className="tool-btn" style={{color:C.inkSoft,padding:'5px 6px'}}><Maximize2 size={19}/></button>
             <button onClick={handleRotatePage} disabled={!pdfBytes||rotating} title="Rotate this page 90° and save" className="tool-btn" style={{color:pdfBytes?C.inkSoft:'#bbb',padding:'5px 6px'}}><RotateCw size={19}/></button>
+            <button onClick={handleDeletePage} disabled={!pdfBytes||deleting||pageCount<=1} title="Delete this page from the file" className="tool-btn" style={{color:pdfBytes&&pageCount>1?'#B5443A':'#bbb',padding:'5px 6px'}}><Trash2 size={19}/></button>
 
             <div style={{width:1,height:18,backgroundColor:C.rule,margin:'0 4px'}}/>
 
@@ -3337,7 +3470,7 @@ export default function App(){
                   </div>
                 ):(
                   <div className="mx-auto doc-shadow" style={{width:'fit-content'}}>
-                    <PdfViewer pdfBytes={pdfBytes} zoom={zoom} page={currentPage} onPageCount={setPageCount} onPageSize={(w,h)=>setPageSize({w,h})} annotations={annotations} activeMark={activeMark} onAddTickmark={addTickmark} onMoveTickmark={moveTickmark} onAddTapeStamp={addTapeStamp} onDeleteTapeStamp={deleteTapeStamp} onMoveTapeStamp={moveTapeStamp} onAddHighlight={addHighlight} onDeleteHighlight={deleteHighlight} author={author}/>
+                    <PdfViewer pdfBytes={pdfBytes} zoom={zoom} page={currentPage} onPageCount={setPageCount} onPageSize={(w,h)=>setPageSize({w,h})} annotations={annotations} activeMark={activeMark} onAddTickmark={addTickmark} onMoveTickmark={moveTickmark} onAddTapeStamp={addTapeStamp} onDeleteTapeStamp={deleteTapeStamp} onMoveTapeStamp={moveTapeStamp} onAddHighlight={addHighlight} onDeleteHighlight={deleteHighlight} onAddTextNote={addTextNote} onUpdateTextNote={updateTextNote} onMoveTextNote={moveTextNote} onDeleteTextNote={deleteTextNote} author={author}/>
                   </div>
                 )}
               </div>
