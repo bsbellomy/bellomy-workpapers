@@ -806,26 +806,32 @@ Follow the ultratax-robot skill, driving UltraTax from the client's data.json. R
 
 function jobFieldStr(v, max) { return String(v == null ? '' : v).slice(0, max) }
 
-async function readJob(id, env) {
-  const s = await env.LINKS_KV.get(`job:${id}`)
-  if (!s) return null
-  try { return JSON.parse(s) } catch { return null }
+// All jobs live under ONE KV key as a { [id]: job } map, read with get() and
+// written with put(). This is deliberate: KV list() is capped at 1,000 ops/day on
+// the free tier, and the app badge, the jobs modal and the dispatcher's claim loop
+// all poll constantly — listing per poll exhausts that in minutes. get()/put() have
+// a 100k/day allowance, so the hot read paths (list, claim-when-empty) cost one
+// get() and never a list(). Volume is a handful of jobs/day, so the single-key
+// read-modify-write is safe; a rare concurrent write at worst drops one update.
+const JOBS_KEY = 'jobs'
+
+async function readJobs(env) {
+  const s = await env.LINKS_KV.get(JOBS_KEY)
+  if (!s) return {}
+  try { const m = JSON.parse(s); return (m && typeof m === 'object' && !Array.isArray(m)) ? m : {} }
+  catch { return {} }
 }
-async function writeJob(job, env) {
-  await env.LINKS_KV.put(`job:${job.id}`, JSON.stringify(job), { expirationTtl: JOB_TTL_DAYS * 86400 })
+function pruneJobs(map) {
+  const now = Date.now()
+  const cutoff = JOB_TTL_DAYS * 86400000
+  for (const [id, j] of Object.entries(map)) {
+    const terminal = j.status === 'done' || j.status === 'error' || j.status === 'canceled'
+    if (terminal && now - (j.updatedAt || j.createdAt || 0) > cutoff) delete map[id]
+  }
+  return map
 }
-async function listAllJobs(env) {
-  const jobs = []
-  let cursor
-  do {
-    const page = await env.LINKS_KV.list({ prefix: 'job:', cursor })
-    cursor = page.list_complete ? undefined : page.cursor
-    for (const k of page.keys) {
-      const s = await env.LINKS_KV.get(k.name)
-      if (s) { try { jobs.push(JSON.parse(s)) } catch { /* skip corrupt */ } }
-    }
-  } while (cursor)
-  return jobs
+async function writeJobs(env, map) {
+  await env.LINKS_KV.put(JOBS_KEY, JSON.stringify(pruneJobs(map)))
 }
 
 async function handleJobCreate(request, env) {
@@ -847,14 +853,15 @@ async function handleJobCreate(request, env) {
     status: 'queued', note: '', agent: '',
     createdAt: now, updatedAt: now, claimedAt: null,
   }
-  await writeJob(job, env)
+  const map = await readJobs(env)
+  map[job.id] = job
+  await writeJobs(env, map)
   return jsonResponse({ ok: true, id: job.id, job })
 }
 
 async function handleJobList(request, env) {
   if (!auth(request, env)) return new Response('Unauthorized', { status: 401 })
-  const jobs = await listAllJobs(env)
-  jobs.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+  const jobs = Object.values(await readJobs(env)).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
   return jsonResponse({ ok: true, count: jobs.length, jobs })
 }
 
@@ -864,16 +871,18 @@ async function handleJobClaim(request, env) {
   if (!auth(request, env)) return new Response('Unauthorized', { status: 401 })
   let agent = ''
   try { const b = await request.json(); agent = jobFieldStr(b?.agent, 120) } catch { /* body optional */ }
-  const queued = (await listAllJobs(env))
+  const map = await readJobs(env)
+  const queued = Object.values(map)
     .filter(j => j.status === 'queued')
     .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
   const job = queued[0]
-  if (!job) return jsonResponse({ ok: true, job: null })
+  if (!job) return jsonResponse({ ok: true, job: null })   // empty poll: one get(), no write
   job.status = 'running'
   job.claimedAt = Date.now()
   job.updatedAt = Date.now()
   job.agent = agent
-  await writeJob(job, env)
+  map[job.id] = job
+  await writeJobs(env, map)
   return jsonResponse({ ok: true, job })
 }
 
@@ -883,7 +892,8 @@ async function handleJobStatus(id, request, env) {
   try { body = await request.json() } catch { return jsonResponse({ ok: false, error: 'invalid json' }, 400) }
   const status = JOB_STATUSES.includes(body.status) ? body.status : null
   if (!status) return jsonResponse({ ok: false, error: 'bad status' }, 400)
-  const job = await readJob(id, env)
+  const map = await readJobs(env)
+  const job = map[id]
   if (!job) return jsonResponse({ ok: false, error: 'not found' }, 404)
   // Cancel is only meaningful while a job is still queued; once the agent owns it
   // (running), only the agent may move it to done/error.
@@ -893,13 +903,16 @@ async function handleJobStatus(id, request, env) {
   job.status = status
   if (typeof body.note === 'string') job.note = body.note.slice(0, 500)
   job.updatedAt = Date.now()
-  await writeJob(job, env)
+  map[id] = job
+  await writeJobs(env, map)
   return jsonResponse({ ok: true, job })
 }
 
 async function handleJobDelete(id, request, env) {
   if (!auth(request, env)) return new Response('Unauthorized', { status: 401 })
-  await env.LINKS_KV.delete(`job:${id}`)
+  const map = await readJobs(env)
+  delete map[id]
+  await writeJobs(env, map)
   return jsonResponse({ ok: true })
 }
 

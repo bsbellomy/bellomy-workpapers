@@ -10,7 +10,12 @@
       "PowerShell(\\(Get-Command npm\\).Source)",
       "Bash(npm run *)",
       "PowerShell($env:PATH += \";C:\\\\Program Files\\\\nodejs\"; Set-Location \"G:\\\\My Drive\\\\Firm Documents\\\\Billy\\\\Drivers\\\\Taxdome Viewer\"; Start-Process powershell -ArgumentList \"-NoExit\", \"-Command\", \"`$env:PATH += ';C:\\\\Program Files\\\\nodejs'; Set-Location 'G:\\\\My Drive\\\\Firm Documents\\\\Billy\\\\Drivers\\\\Taxdome Viewer'; npm run dev\" -WindowStyle Normal)",
-      "PowerShell($env:PATH += \";C:\\\\Program Files\\\\nodejs\"; Set-Location \"G:\\\\My Drive\\\\Firm Documents\\\\Billy\\\\Drivers\\\\Taxdome Viewer\"; & \"C:\\\\Program Files\\\\nodejs\\\\npm.cmd\" install 2>&1 | Select-Object -Last 5)"
+      "PowerShell($env:PATH += \";C:\\\\Program Files\\\\nodejs\"; Set-Location \"G:\\\\My Drive\\\\Firm Documents\\\\Billy\\\\Drivers\\\\Taxdome Viewer\"; & \"C:\\\\Program Files\\\\nodejs\\\\npm.cmd\" install 2>&1 | Select-Object -Last 5)",
+ "PowerShell(& \"D:\\\\Projects\\\\taxguide-builder\\\\tools\\\\ultratax\\\\Submit-VocsCredential.ps1\"*)",
+      "PowerShell(& \"D:\\\\Projects\\\\taxguide-builder\\\\tools\\\\ultratax\\\\Probe-VocsInput.ps1\"*)",
+      "PowerShell(& \"D:\\\\Projects\\\\taxguide-builder\\\\tools\\\\ultratax\\\\Launch-UltraTax.ps1\"*)",
+"ScheduleWakeup",
+"Monitor"
     ]
   },
   "hooks": {

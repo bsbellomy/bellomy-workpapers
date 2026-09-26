@@ -182,6 +182,24 @@ console.log('\nTemplates\n' + '='.repeat(64))
   check('  ...unset templates still fall back to default', g2.templates.request === DEFAULT_JOB_TEMPLATES.request)
 }
 
+console.log('\nNo KV list() in the job paths (free-tier list cap is 1,000/day)\n' + '='.repeat(64))
+{
+  // Regression guard: the hot paths (poll = list + claim) must never call KV
+  // list() — it is capped at 1,000 ops/day on the free tier and constant polling
+  // exhausted it once. All job storage goes through a single get()/put() key.
+  const env = makeEnv()
+  let listCalls = 0
+  env.LINKS_KV.list = async () => { listCalls++; throw new Error('KV list() must not be called from job endpoints') }
+  const c = await bodyOf(await handleJobCreate(req('POST', { process: 'guide', prompt: 'x' }), env))
+  await handleJobList(req('GET'), env)
+  await handleJobClaim(req('POST', {}), env)
+  await handleJobStatus(c.id, req('POST', { status: 'done' }), env)
+  await handleJobList(req('GET'), env)
+  await handleJobDelete(c.id, req('DELETE'), env)
+  await handleJobTemplatesGet(req('GET'), env)
+  check('create/list/claim/status/delete/templates make ZERO list() calls', listCalls === 0, `${listCalls} calls`)
+}
+
 console.log('\n' + '='.repeat(64))
 console.log(fail === 0 ? `ALL ${pass} CHECKS PASSED` : `${pass} passed, ${fail} FAILED`)
 process.exit(fail === 0 ? 0 : 1)
