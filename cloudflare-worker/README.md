@@ -70,3 +70,61 @@ If you want a hard backstop in case a file is uploaded and the link is never
 clicked, you can add an R2 object lifecycle rule in the Cloudflare dashboard
 (R2 → your bucket → Settings → Object lifecycle rules) to auto-delete objects
 older than, say, 30 days. Not required, just extra insurance.
+
+## Retention
+
+KV records self-expire (`expirationTtl`), **but R2 objects have no TTL**. Before Sept 2026 that
+meant every uploaded client document stayed in the bucket permanently: once the KV record lapsed
+its R2 objects became orphans that nothing listed and nothing cleaned. Two further leaks fed it —
+`handleRevokeUploadRequest` deleted only the KV record, and a magic link that nobody ever clicked
+never reached its cleanup path.
+
+| Setting | Value |
+|---|---|
+| Upload request — default life | **75 days** |
+| Upload request — hard cap | **90 days** |
+| Magic link — default life | **30 days** (was 7) |
+| Magic link — hard cap | **90 days** |
+| Grace before R2 is purged | **30 days** past the cap |
+
+`expiresDays` / `X-Expires-Days` are clamped by `clampDays()`, so a caller cannot create something
+that outlives the policy. Missing, zero, negative and non-numeric all fall back to the default.
+
+### The sweep
+
+`scheduled()` runs `sweepOrphans()` daily at 07:00 UTC (`[triggers]` in `wrangler.toml`). It walks
+the `ur/` and `ml/` prefixes and deletes an object only when **both** are true:
+
+1. its KV record is **gone**, and
+2. the object is older than the hard cap **plus** the grace period (120 days).
+
+So nothing inside a live window can ever be touched, and a live record protects its files however
+old they are. It pages through `list()` with a cursor and caches the KV lookup per token.
+
+Run the guard tests before deploying — this code deletes client documents:
+
+```bash
+node cloudflare-worker/sweep.test.mjs
+```
+
+### Deploying
+
+```bash
+cd cloudflare-worker
+npx wrangler login          # or set CLOUDFLARE_API_TOKEN
+npx wrangler deploy         # picks up [triggers] and registers the cron
+```
+
+Optional belt-and-braces — an R2 lifecycle rule, independent of the worker:
+
+```bash
+npx wrangler r2 bucket lifecycle add bellomy-magic-links \
+  --name purge-old --prefix "" --expire-days 180
+```
+
+To sweep once by hand instead of waiting for the cron:
+
+```bash
+npx wrangler dev --test-scheduled
+curl "http://localhost:8787/__scheduled?cron=0+7+*+*+*"
+```

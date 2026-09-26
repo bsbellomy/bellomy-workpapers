@@ -13,12 +13,53 @@
 //   GET  /download-upload/:token/:filename (auth) — fetch a pending file
 //   DELETE /upload-request/:token (auth) — revoke an upload request
 //
+// Worksheet state (interactive information requests):
+//   POST /worksheet/:token       — client autosaves answers (no auth, token-gated)
+//   GET  /worksheet/:token       — client resumes on any device (no auth, token-gated)
+//   GET  /inbox          (auth)  — every live request + its progress, for the digest
+//   POST /publish-worksheet/:token (auth) — store the worksheet HTML for a token
+//   GET  /w/:token               — serve it to the client (no auth, token-gated)
+//
+// Hosting the worksheet here rather than emailing it as an attachment is what
+// makes it resumable in practice: the client gets one durable URL that works on
+// a phone, survives a closed tab, and is same-origin with the save endpoint, so
+// autosave and in-page file attachment need no CORS gymnastics.
+//
 // Bindings (wrangler.toml / dashboard):
 //   MAGIC_LINKS_BUCKET  - R2 bucket
 //   LINKS_KV            - KV namespace
 //   UPLOAD_SECRET       - secret env var
+//
+// Retention
+//   KV records self-expire via expirationTtl, but R2 objects have no TTL. Once a
+//   KV record lapses its R2 objects become orphans that nothing lists and nothing
+//   cleans, so client documents would sit in the bucket indefinitely. The daily
+//   cron below sweeps them. Caps keep any single link inside the retention window.
+
+const UR_DEFAULT_DAYS = 75     // upload requests: default life
+const UR_MAX_DAYS     = 90     // upload requests: hard cap
+const ML_DEFAULT_DAYS = 30     // magic links: default life (client sends)
+const ML_MAX_DAYS     = 90     // magic links: hard cap
+const SWEEP_GRACE_DAYS = 30    // extra grace after a record lapses before R2 is purged
+const WS_MAX_BYTES = 262144    // worksheet autosave payload cap (256 KB). POST /worksheet/:token
+                               // is unauthenticated by design — the token IS the credential —
+                               // so the body must be bounded and JSON-validated before it is stored.
+
+function clampDays(v, dflt, max) {
+  const d = parseFloat(v)
+  if (!isFinite(d) || d <= 0) return dflt
+  return Math.min(d, max)
+}
 
 export default {
+  // Daily sweep: purge R2 objects whose KV record has lapsed. Deliberately
+  // conservative - an object is only removed when its record is GONE and the
+  // object is older than the maximum link life plus a grace period, so nothing
+  // inside a live window can ever be touched.
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(sweepOrphans(env))
+  },
+
   async fetch(request, env, ctx) {
     const url = new URL(request.url)
     const parts = url.pathname.slice(1).split('/')  // e.g. ['upload-request', 'TOKEN']
@@ -48,6 +89,30 @@ export default {
       return handleDeleteUpload(parts[1], decodeURIComponent(parts[2]), request, env)
     }
 
+    // ── Worksheet state: server-side save/resume for interactive requests ─────
+    // Both are unauthenticated and gated only by the 16-char token, exactly like
+    // the upload page itself. Worksheets must therefore never ask for an SSN,
+    // bank or account number — see the request-builder skill.
+    if (parts[0] === 'worksheet' && parts[1] && parts.length === 2) {
+      const token = parts[1]
+      if (request.method === 'OPTIONS') return corsPreflight()
+      if (request.method === 'GET')     return handleWorksheetLoad(token, env)
+      if (request.method === 'POST')    return handleWorksheetSave(token, request, env)
+    }
+
+    // ── GET /inbox (auth) — everything outstanding, in one call ───────────────
+    if (parts[0] === 'inbox' && parts.length === 1 && request.method === 'GET') {
+      return handleInbox(request, env)
+    }
+
+    // ── The worksheet page itself ────────────────────────────────────────────
+    if (parts[0] === 'publish-worksheet' && parts[1] && parts.length === 2 && request.method === 'POST') {
+      return handlePublishWorksheet(parts[1], request, env)
+    }
+    if (parts[0] === 'w' && parts[1] && parts.length === 2 && request.method === 'GET') {
+      return handleWorksheetPage(parts[1], env)
+    }
+
     // ── Magic link: GET /:token — human-facing landing page (does NOT consume) ─
     // A bare GET is exactly what email security scanners (Defender Safe Links,
     // Proofpoint URL Defense, Mimecast, Barracuda, ...) issue to detonate links
@@ -69,6 +134,44 @@ export default {
   },
 }
 
+async function sweepOrphans(env) {
+  const now = Date.now()
+  const plans = [
+    { prefix: 'ur/', kv: k => `ur:${k}`, maxAgeDays: UR_MAX_DAYS + SWEEP_GRACE_DAYS },
+    { prefix: 'ml/', kv: k => `ml:${k}`, maxAgeDays: ML_MAX_DAYS + SWEEP_GRACE_DAYS },
+    // Worksheet state is keyed ws/<token>.json (no directory segment), and its
+    // lifetime is the upload request's, so it checks the same ur: record. Every
+    // autosave rewrites the object, which refreshes `uploaded` — an actively
+    // worked worksheet therefore never ages into the sweep.
+    { prefix: 'ws/', kv: k => `ur:${k}`, maxAgeDays: UR_MAX_DAYS + SWEEP_GRACE_DAYS,
+      tokenOf: rest => rest.replace(/\.(json|html)$/, '') },
+  ]
+  let purged = 0, scanned = 0
+  for (const plan of plans) {
+    let cursor
+    do {
+      const page = await env.MAGIC_LINKS_BUCKET.list({ prefix: plan.prefix, cursor, limit: 1000 })
+      cursor = page.truncated ? page.cursor : undefined
+      // Token is the path segment after the prefix: ur/<token>/<file> or ml/<token>
+      const seen = new Map()
+      for (const o of page.objects) {
+        scanned++
+        const rest = o.key.slice(plan.prefix.length)
+        const token = plan.tokenOf ? plan.tokenOf(rest) : rest.split('/')[0]
+        if (!token) continue
+        const ageDays = (now - new Date(o.uploaded).getTime()) / 86400000
+        if (ageDays <= plan.maxAgeDays) continue        // still inside the window
+        if (!seen.has(token)) seen.set(token, await env.LINKS_KV.get(plan.kv(token)))
+        if (seen.get(token)) continue                    // record still live - leave it
+        await env.MAGIC_LINKS_BUCKET.delete(o.key)
+        purged++
+      }
+    } while (cursor)
+  }
+  console.log(`sweepOrphans: scanned ${scanned}, purged ${purged}`)
+  return { scanned, purged }
+}
+
 function shortId(len = 12) {
   const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
   const bytes = new Uint8Array(len)
@@ -85,7 +188,7 @@ function auth(request, env) {
 async function handleMagicUpload(request, env) {
   if (!auth(request, env)) return new Response('Unauthorized', { status: 401 })
   const fileName = decodeURIComponent(request.headers.get('X-File-Name') || 'document')
-  const expiresDays = parseFloat(request.headers.get('X-Expires-Days') || '7')
+  const expiresDays = clampDays(request.headers.get('X-Expires-Days'), ML_DEFAULT_DAYS, ML_MAX_DAYS)
   const token = shortId()
   const body = await request.arrayBuffer()
   await env.MAGIC_LINKS_BUCKET.put(`ml/${token}`, body)
@@ -193,12 +296,13 @@ async function handleCreateUploadRequest(request, env) {
   if (!auth(request, env)) return new Response('Unauthorized', { status: 401 })
   const { label, instructions, expiresDays } = await request.json()
   const token = shortId(16)
-  const expiresAt = Date.now() + (expiresDays || 30) * 86400000
-  await env.LINKS_KV.put(`ur:${token}`, JSON.stringify({ label, instructions, expiresAt, files: [] }), {
-    expirationTtl: Math.ceil((expiresDays || 30) * 86400) + 3600,
+  const days = clampDays(expiresDays, UR_DEFAULT_DAYS, UR_MAX_DAYS)
+  const expiresAt = Date.now() + days * 86400000
+  await env.LINKS_KV.put(`ur:${token}`, JSON.stringify({ label, instructions, expiresAt, createdAt: Date.now(), files: [] }), {
+    expirationTtl: Math.ceil(days * 86400) + 3600,
   })
   const origin = new URL(request.url).origin
-  return new Response(JSON.stringify({ token, url: `${origin}/upload-request/${token}` }), {
+  return new Response(JSON.stringify({ token, url: `${origin}/upload-request/${token}`, expiresAt, expiresDays: days }), {
     headers: { 'Content-Type': 'application/json' },
   })
 }
@@ -436,8 +540,213 @@ async function handleDeleteUpload(token, filename, request, env) {
 
 async function handleRevokeUploadRequest(token, request, env) {
   if (!auth(request, env)) return new Response('Unauthorized', { status: 401 })
+  // Delete the pending files too. Dropping only the KV record would strand any
+  // already-uploaded objects in R2 with nothing left pointing at them.
+  const prefix = `ur/${token}/`
+  const listed = await env.MAGIC_LINKS_BUCKET.list({ prefix })
+  await Promise.all(listed.objects.map(o => env.MAGIC_LINKS_BUCKET.delete(o.key)))
+  // The worksheet answers live outside that prefix — drop them in the same
+  // breath, otherwise revoking would strand them exactly as it used to strand
+  // uploaded files.
+  await Promise.all([
+    env.MAGIC_LINKS_BUCKET.delete(`ws/${token}.json`),
+    env.MAGIC_LINKS_BUCKET.delete(`ws/${token}.html`),
+  ])
   await env.LINKS_KV.delete(`ur:${token}`)
-  return new Response(JSON.stringify({ ok: true }), { headers: { 'Content-Type': 'application/json' } })
+  return new Response(JSON.stringify({ ok: true, purged: listed.objects.length }), {
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+// ── Worksheet state ──────────────────────────────────────────────────────────
+// An interactive information request is a static HTML file the client keeps.
+// Its answers live here, under the same token as the upload request, so the
+// client can resume on any device and Billy can read partial progress without
+// waiting for a submit.
+
+const WS_CORS = {
+  // The worksheet is usually opened as a local file (origin `null`), so the
+  // browser needs an explicit allow to fetch/post here. The token is the only
+  // credential and is never a cookie, so a wildcard origin grants nothing extra.
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Max-Age': '86400',
+}
+
+function corsPreflight() {
+  return new Response(null, { status: 204, headers: WS_CORS })
+}
+
+function jsonResponse(obj, status = 200) {
+  return new Response(JSON.stringify(obj), {
+    status,
+    headers: {
+      'Content-Type': 'application/json',
+      // Client financial answers: never let a proxy or the browser cache them.
+      'Cache-Control': 'no-store, private',
+      ...WS_CORS,
+    },
+  })
+}
+
+// The worksheet lives under the upload request's token and dies with it.
+async function liveUploadRecord(token, env) {
+  const recordStr = await env.LINKS_KV.get(`ur:${token}`)
+  if (!recordStr) return null
+  const record = JSON.parse(recordStr)
+  if (Date.now() > record.expiresAt) return null
+  return record
+}
+
+async function handleWorksheetLoad(token, env) {
+  const record = await liveUploadRecord(token, env)
+  if (!record) return jsonResponse({ ok: false, error: 'expired' }, 410)
+  const empty = { ok: true, answers: {}, answered: 0, total: 0, submitted: false, savedAt: null, label: record.label || '' }
+  const obj = await env.MAGIC_LINKS_BUCKET.get(`ws/${token}.json`)
+  if (!obj) return jsonResponse(empty)   // nothing saved yet is a normal first visit
+  let state
+  try { state = JSON.parse(await obj.text()) } catch { state = null }
+  if (!state || typeof state !== 'object') return jsonResponse(empty)
+  return jsonResponse({ ok: true, ...state, label: record.label || state.label || '' })
+}
+
+async function handleWorksheetSave(token, request, env) {
+  const record = await liveUploadRecord(token, env)
+  if (!record) return jsonResponse({ ok: false, error: 'expired' }, 410)
+
+  const raw = await request.text()
+  if (raw.length > WS_MAX_BYTES) return jsonResponse({ ok: false, error: 'payload too large' }, 413)
+  let body
+  try { body = JSON.parse(raw) } catch { return jsonResponse({ ok: false, error: 'invalid json' }, 400) }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return jsonResponse({ ok: false, error: 'invalid body' }, 400)
+  }
+
+  const answers = (body.answers && typeof body.answers === 'object' && !Array.isArray(body.answers)) ? body.answers : {}
+  const total = Number.isFinite(body.total) ? Math.max(0, Math.trunc(body.total)) : 0
+  const answered = Object.keys(answers).length
+  const submitted = body.submitted === true
+  const savedAt = Date.now()
+  const state = { answers, total, answered, submitted, savedAt, label: record.label || '' }
+
+  await env.MAGIC_LINKS_BUCKET.put(`ws/${token}.json`, JSON.stringify(state), {
+    httpMetadata: { contentType: 'application/json' },
+    // Mirrored into customMetadata so GET /inbox can report progress from a
+    // head() instead of fetching and parsing every worksheet body.
+    customMetadata: {
+      answered: String(answered),
+      total: String(total),
+      submitted: submitted ? '1' : '0',
+      savedAt: String(savedAt),
+    },
+  })
+
+  // On submit, drop a readable transcript into the FILE inbox as well. That is
+  // what raises the existing badge in the Workpapers app — no app change needed.
+  if (submitted) {
+    const text = typeof body.text === 'string' && body.text ? body.text : renderTranscript(state)
+    const stamp = new Date(savedAt).toISOString().slice(0, 16).replace('T', ' ').replace(':', '')
+    const base = (record.label || 'worksheet').replace(/[^a-zA-Z0-9._\-\s]/g, '_')
+    await env.MAGIC_LINKS_BUCKET.put(`ur/${token}/${base} - submitted ${stamp}.txt`, text, {
+      httpMetadata: { contentType: 'text/plain; charset=utf-8' },
+    })
+  }
+
+  return jsonResponse({ ok: true, savedAt, answered, total, submitted })
+}
+
+// Fallback transcript when the page did not send its own formatted text.
+function renderTranscript(state) {
+  const lines = [
+    state.label || 'Worksheet',
+    'Submitted: ' + new Date(state.savedAt).toISOString(),
+    `Answered ${state.answered} of ${state.total} items`,
+    '',
+  ]
+  for (const [q, v] of Object.entries(state.answers)) lines.push(`${q}: ${v}`)
+  return lines.join('\n')
+}
+
+// ── The worksheet page ───────────────────────────────────────────────────────
+// Billy publishes the generated HTML against a token; the client opens /w/:token.
+// Same origin as /worksheet/:token and /upload-request/:token, so the page can
+// autosave and attach files with a plain fetch.
+
+const WS_PAGE_MAX_BYTES = 2097152   // 2 MB — a self-contained worksheet is ~40 KB
+
+async function handlePublishWorksheet(token, request, env) {
+  if (!auth(request, env)) return new Response('Unauthorized', { status: 401 })
+  const record = await liveUploadRecord(token, env)
+  if (!record) return jsonResponse({ ok: false, error: 'no live upload request for that token' }, 410)
+  const html = await request.text()
+  if (!html) return jsonResponse({ ok: false, error: 'empty body' }, 400)
+  if (html.length > WS_PAGE_MAX_BYTES) return jsonResponse({ ok: false, error: 'page too large' }, 413)
+  await env.MAGIC_LINKS_BUCKET.put(`ws/${token}.html`, html, {
+    httpMetadata: { contentType: 'text/html;charset=utf-8' },
+  })
+  const origin = new URL(request.url).origin
+  return jsonResponse({ ok: true, url: `${origin}/w/${token}`, bytes: html.length })
+}
+
+async function handleWorksheetPage(token, env) {
+  const record = await liveUploadRecord(token, env)
+  if (!record) return expiredUploadPage()
+  const obj = await env.MAGIC_LINKS_BUCKET.get(`ws/${token}.html`)
+  if (!obj) return expiredUploadPage()
+  return new Response(obj.body, {
+    headers: {
+      'Content-Type': 'text/html;charset=utf-8',
+      // The page is a shell; the answers arrive from /worksheet/:token. Keeping
+      // it uncached means a corrected worksheet republished mid-season is picked
+      // up on the client's next visit rather than served stale from their cache.
+      'Cache-Control': 'no-store, private',
+      'X-Robots-Tag': 'noindex, nofollow',
+    },
+  })
+}
+
+// ── GET /inbox — one call for the morning digest ─────────────────────────────
+// Walks every live ur: record and reports what has arrived against it: files
+// uploaded, and worksheet progress read straight from R2 customMetadata.
+async function handleInbox(request, env) {
+  if (!auth(request, env)) return new Response('Unauthorized', { status: 401 })
+  const now = Date.now()
+  const requests = []
+  let cursor
+  do {
+    const page = await env.LINKS_KV.list({ prefix: 'ur:', cursor })
+    cursor = page.list_complete ? undefined : page.cursor
+    for (const k of page.keys) {
+      const token = k.name.slice(3)
+      const recStr = await env.LINKS_KV.get(k.name)
+      if (!recStr) continue                       // lapsed between list and get
+      const rec = JSON.parse(recStr)
+      const prefix = `ur/${token}/`
+      const listed = await env.MAGIC_LINKS_BUCKET.list({ prefix })
+      const head = await env.MAGIC_LINKS_BUCKET.head(`ws/${token}.json`)
+      const page = await env.MAGIC_LINKS_BUCKET.head(`ws/${token}.html`)
+      const m = head?.customMetadata || {}
+      requests.push({
+        token,
+        label: rec.label || '',
+        createdAt: rec.createdAt || null,
+        expiresAt: rec.expiresAt,
+        expired: now > rec.expiresAt,
+        daysLeft: Math.max(0, Math.round((rec.expiresAt - now) / 86400000)),
+        files: listed.objects.map(o => ({ name: o.key.slice(prefix.length), size: o.size, uploaded: o.uploaded })),
+        hasPage: !!page,
+        worksheet: head ? {
+          answered: parseInt(m.answered, 10) || 0,
+          total: parseInt(m.total, 10) || 0,
+          submitted: m.submitted === '1',
+          savedAt: parseInt(m.savedAt, 10) || null,
+        } : null,
+      })
+    }
+  } while (cursor)
+  requests.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+  return jsonResponse({ ok: true, count: requests.length, requests })
 }
 
 function escapeHtml(s) {

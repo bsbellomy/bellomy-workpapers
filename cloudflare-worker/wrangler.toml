@@ -6,6 +6,11 @@ compatibility_date = "2024-09-01"
 binding = "MAGIC_LINKS_BUCKET"
 bucket_name = "bellomy-magic-links"
 
+# Daily orphan sweep (07:00 UTC ~= 1-2am Central). Purges R2 objects whose KV
+# record has lapsed; see sweepOrphans() in worker.js.
+[triggers]
+crons = ["0 7 * * *"]
+
 [[kv_namespaces]]
 binding = "LINKS_KV"
 id = "8184c23c34c940048874202c63be1a59"
