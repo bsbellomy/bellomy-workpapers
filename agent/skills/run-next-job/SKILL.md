@@ -72,3 +72,17 @@ Billy is watching. Honor each skill's own confirmation gates (e.g. ultratax-robo
 ### 7. Next one
 Offer to drain the queue: run `list` to show what's left, and re-invoke this skill for the next
 job. Run **one at a time** - never start a second job while one is in progress.
+
+## Automatic mode (dispatcher loop)
+
+This skill is the body of the always-on dispatcher. Rather than typing "run the next job", keep
+one desktop Code session on the box running it in a loop so the queue drains on its own:
+
+```
+/loop Claim and run the next queued Bellomy Workpapers job with the run-next-job skill; if the queue is empty this cycle, just wait. One job at a time. Keep the box awake while looping.
+```
+
+Each cycle claims at most one job; a long RPA run simply holds the loop until it finishes, so jobs
+never overlap. Keep that dispatcher session open with keep-awake on. When the queue is empty the
+cycle does nothing and waits for the next poll. (Computer-use only exists inside a desktop session
+and no script can spawn one, so this kept-open loop is what makes pickup automatic.)

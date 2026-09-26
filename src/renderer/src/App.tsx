@@ -1915,15 +1915,16 @@ function RequestUploadModal({folderPath,folderName,author,onClose,onCreated}:{fo
 
 // ── Upload Inbox Modal ────────────────────────────────────────────────────────
 
-// American football — lucide has no such glyph, so this matches its stroke style
-// (no fill, currentColor stroke, 24×24). A lens body with a center lace + stitches.
+// American football — lucide has no such glyph. Filled leather body (currentColor,
+// so it still tints with the toolbar/badge color) with cream laces across the seam.
 function FootballIcon({size=20,style}:{size?:number;style?:React.CSSProperties}){
   return(
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
-      strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" style={style}>
-      <path d="M3 12c3-5 15-5 18 0-3 5-15 5-18 0Z"/>
-      <path d="M8.5 12h7"/>
-      <path d="M10.5 10.3v3.4M12 10v4M13.5 10.3v3.4"/>
+    <svg width={size} height={size} viewBox="0 0 24 24" style={style}>
+      <path fill="currentColor" d="M2.6 12C6 6.6 18 6.6 21.4 12C18 17.4 6 17.4 2.6 12Z"/>
+      <g stroke={C.paperLight} strokeWidth={1.5} strokeLinecap="round" fill="none">
+        <path d="M9 12h6"/>
+        <path d="M10 10.9v2.2M12 10.6v2.8M14 10.9v2.2"/>
+      </g>
     </svg>
   )
 }

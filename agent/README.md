@@ -51,13 +51,27 @@ Code session on the box, under Billy's oversight.
 
 ## Running jobs
 
-When the football badge shows queued jobs, open a **desktop** Claude Code session on
-the box and say **"run the next job"** (or `/run-next-job`). It will:
+### Automatic (dispatcher loop) — recommended
 
-1. Claim the oldest queued job (`job-cli.mjs claim`) — the badge flips it to running.
-2. Switch to the job's repo and follow its skill end to end.
-3. Report `done` / `error` back to the queue.
-4. Offer to run the next one. **One job at a time.**
+Keep one **desktop** Claude Code session open on the box as the dispatcher and start it
+looping once:
+
+```
+/loop Claim and run the next queued Bellomy Workpapers job with the run-next-job skill; if the queue is empty this cycle, just wait. One job at a time. Keep the box awake while looping.
+```
+
+It then polls the queue on its own (~once a minute) and starts each job the moment it
+appears — no one has to type anything. Request/guide finish unattended; the return RPA
+auto-starts but still pauses at its own safety gates (backup, confirm client ID), so keep
+an eye on the box for those. The dispatcher session must stay open (keep-awake on) —
+computer-use only exists inside a desktop session and no script can spawn one, so a
+kept-open loop is what makes pickup automatic.
+
+### Manual (one-off)
+
+Or, when the football badge shows jobs, say **"run the next job"** (or `/run-next-job`) in
+a desktop session. It claims the oldest job, switches to its repo, follows the skill, and
+reports `done`/`error` — one at a time.
 
 ## Job CLI (used by the skill)
 
