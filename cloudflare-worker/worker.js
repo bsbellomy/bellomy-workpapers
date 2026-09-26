@@ -113,6 +113,34 @@ export default {
       return handleWorksheetPage(parts[1], env)
     }
 
+    // ── Jobs: the agent queue ─────────────────────────────────────────────────
+    // Any Workpapers machine POSTs a job here; the always-up agent on the dev box
+    // claims and runs them one at a time. All endpoints are auth-gated (Bearer
+    // UPLOAD_SECRET) — a job carries a prompt and a client folder path, never a
+    // client credential, but it drives an autonomous session so it must never be
+    // enqueued or read by anyone but the firm. These MUST be registered before the
+    // bare GET/POST /:token magic-link routes below, or "jobs"/"job" would be
+    // mistaken for a magic-link token.
+    if (parts[0] === 'job' && parts.length === 1 && request.method === 'POST') {
+      return handleJobCreate(request, env)
+    }
+    if (parts[0] === 'jobs' && parts.length === 1 && request.method === 'GET') {
+      return handleJobList(request, env)
+    }
+    if (parts[0] === 'claim-job' && parts.length === 1 && request.method === 'POST') {
+      return handleJobClaim(request, env)
+    }
+    if (parts[0] === 'job' && parts[1] && parts[2] === 'status' && parts.length === 3 && request.method === 'POST') {
+      return handleJobStatus(parts[1], request, env)
+    }
+    if (parts[0] === 'job' && parts[1] && parts.length === 2 && request.method === 'DELETE') {
+      return handleJobDelete(parts[1], request, env)
+    }
+    if (parts[0] === 'job-templates' && parts.length === 1) {
+      if (request.method === 'GET')  return handleJobTemplatesGet(request, env)
+      if (request.method === 'POST') return handleJobTemplatesSet(request, env)
+    }
+
     // ── Magic link: GET /:token — human-facing landing page (does NOT consume) ─
     // A bare GET is exactly what email security scanners (Defender Safe Links,
     // Proofpoint URL Defense, Mimecast, Barracuda, ...) issue to detonate links
@@ -748,6 +776,151 @@ async function handleInbox(request, env) {
   requests.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
   return jsonResponse({ ok: true, count: requests.length, requests })
 }
+
+// ── Jobs: the agent queue ─────────────────────────────────────────────────────
+// ==JOBS_BLOCK_START== (jobs.test.mjs slices from here to ==JOBS_BLOCK_END==)
+// Jobs are queued in KV as job:<id>. The dev-box agent claims the oldest queued
+// job, runs it to completion in an interactive session, and reports status back.
+// One job runs at a time; the queue is drained serially. Records self-expire so
+// a finished queue cleans itself.
+const JOB_TTL_DAYS  = 30
+const JOB_MAX_PROMPT = 8192
+const JOB_PROCESSES = ['request', 'guide', 'return']
+const JOB_STATUSES  = ['queued', 'running', 'done', 'error', 'canceled']
+
+// Thin default templates. The real logic lives in each Claude skill; these just
+// name the client, year and folder and point at the right skill. Editable
+// centrally via POST /job-templates (no app release needed) and per-run in the
+// app popup. Placeholders {{client}} {{year}} {{path}} are filled by the app.
+const DEFAULT_JOB_TEMPLATES = {
+  request: `Build the "things we still need" document request for {{client}} for tax year {{year}}.
+Their Workpapers folder is {{path}}.
+Follow the tax-preprep skill end to end: review what we already have, produce PRE-PREP.md and the hosted worksheet, then create and publish the upload request. Resolve the client's TaxFlowID yourself (taxdome-api / clients folder) — do not ask for it.`,
+  guide: `Build the tax preparation guide (data-entry tearsheet) for {{client}} for tax year {{year}}.
+Their Workpapers folder is {{path}}.
+Follow the tax-tearsheet skill. Resolve the client's TaxFlowID yourself (taxdome-api / clients folder) — do not ask for it.`,
+  return: `Prepare the {{year}} tax return for {{client}} in UltraTax.
+Their Workpapers folder is {{path}}.
+Follow the ultratax-robot skill, driving UltraTax from the client's data.json. Resolve the client's TaxFlowID yourself (taxdome-api / clients folder) — do not ask for it.`,
+}
+
+function jobFieldStr(v, max) { return String(v == null ? '' : v).slice(0, max) }
+
+async function readJob(id, env) {
+  const s = await env.LINKS_KV.get(`job:${id}`)
+  if (!s) return null
+  try { return JSON.parse(s) } catch { return null }
+}
+async function writeJob(job, env) {
+  await env.LINKS_KV.put(`job:${job.id}`, JSON.stringify(job), { expirationTtl: JOB_TTL_DAYS * 86400 })
+}
+async function listAllJobs(env) {
+  const jobs = []
+  let cursor
+  do {
+    const page = await env.LINKS_KV.list({ prefix: 'job:', cursor })
+    cursor = page.list_complete ? undefined : page.cursor
+    for (const k of page.keys) {
+      const s = await env.LINKS_KV.get(k.name)
+      if (s) { try { jobs.push(JSON.parse(s)) } catch { /* skip corrupt */ } }
+    }
+  } while (cursor)
+  return jobs
+}
+
+async function handleJobCreate(request, env) {
+  if (!auth(request, env)) return new Response('Unauthorized', { status: 401 })
+  let body
+  try { body = await request.json() } catch { return jsonResponse({ ok: false, error: 'invalid json' }, 400) }
+  const process = JOB_PROCESSES.includes(body.process) ? body.process : null
+  const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : ''
+  if (!process) return jsonResponse({ ok: false, error: 'unknown process' }, 400)
+  if (!prompt)  return jsonResponse({ ok: false, error: 'empty prompt' }, 400)
+  if (prompt.length > JOB_MAX_PROMPT) return jsonResponse({ ok: false, error: 'prompt too large' }, 413)
+  const now = Date.now()
+  const job = {
+    id: shortId(12), process, prompt,
+    client: jobFieldStr(body.client, 200),
+    path: jobFieldStr(body.path, 400),
+    year: jobFieldStr(body.year, 8),
+    requester: jobFieldStr(body.requester, 120),
+    status: 'queued', note: '', agent: '',
+    createdAt: now, updatedAt: now, claimedAt: null,
+  }
+  await writeJob(job, env)
+  return jsonResponse({ ok: true, id: job.id, job })
+}
+
+async function handleJobList(request, env) {
+  if (!auth(request, env)) return new Response('Unauthorized', { status: 401 })
+  const jobs = await listAllJobs(env)
+  jobs.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+  return jsonResponse({ ok: true, count: jobs.length, jobs })
+}
+
+// The agent calls this to atomically take the next job. With a single agent this
+// is effectively serial; picking the oldest queued keeps the queue FIFO.
+async function handleJobClaim(request, env) {
+  if (!auth(request, env)) return new Response('Unauthorized', { status: 401 })
+  let agent = ''
+  try { const b = await request.json(); agent = jobFieldStr(b?.agent, 120) } catch { /* body optional */ }
+  const queued = (await listAllJobs(env))
+    .filter(j => j.status === 'queued')
+    .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
+  const job = queued[0]
+  if (!job) return jsonResponse({ ok: true, job: null })
+  job.status = 'running'
+  job.claimedAt = Date.now()
+  job.updatedAt = Date.now()
+  job.agent = agent
+  await writeJob(job, env)
+  return jsonResponse({ ok: true, job })
+}
+
+async function handleJobStatus(id, request, env) {
+  if (!auth(request, env)) return new Response('Unauthorized', { status: 401 })
+  let body
+  try { body = await request.json() } catch { return jsonResponse({ ok: false, error: 'invalid json' }, 400) }
+  const status = JOB_STATUSES.includes(body.status) ? body.status : null
+  if (!status) return jsonResponse({ ok: false, error: 'bad status' }, 400)
+  const job = await readJob(id, env)
+  if (!job) return jsonResponse({ ok: false, error: 'not found' }, 404)
+  // Cancel is only meaningful while a job is still queued; once the agent owns it
+  // (running), only the agent may move it to done/error.
+  if (status === 'canceled' && job.status !== 'queued') {
+    return jsonResponse({ ok: false, error: `job already ${job.status}` }, 409)
+  }
+  job.status = status
+  if (typeof body.note === 'string') job.note = body.note.slice(0, 500)
+  job.updatedAt = Date.now()
+  await writeJob(job, env)
+  return jsonResponse({ ok: true, job })
+}
+
+async function handleJobDelete(id, request, env) {
+  if (!auth(request, env)) return new Response('Unauthorized', { status: 401 })
+  await env.LINKS_KV.delete(`job:${id}`)
+  return jsonResponse({ ok: true })
+}
+
+async function handleJobTemplatesGet(request, env) {
+  if (!auth(request, env)) return new Response('Unauthorized', { status: 401 })
+  const s = await env.LINKS_KV.get('job-templates')
+  let saved = null
+  if (s) { try { saved = JSON.parse(s) } catch { /* fall back to defaults */ } }
+  return jsonResponse({ ok: true, templates: { ...DEFAULT_JOB_TEMPLATES, ...(saved || {}) } })
+}
+
+async function handleJobTemplatesSet(request, env) {
+  if (!auth(request, env)) return new Response('Unauthorized', { status: 401 })
+  let body
+  try { body = await request.json() } catch { return jsonResponse({ ok: false, error: 'invalid json' }, 400) }
+  const t = {}
+  for (const k of JOB_PROCESSES) if (typeof body[k] === 'string') t[k] = body[k].slice(0, JOB_MAX_PROMPT)
+  await env.LINKS_KV.put('job-templates', JSON.stringify(t))
+  return jsonResponse({ ok: true, templates: { ...DEFAULT_JOB_TEMPLATES, ...t } })
+}
+// ==JOBS_BLOCK_END==
 
 function escapeHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')

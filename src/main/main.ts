@@ -4,6 +4,7 @@ import { spawn } from 'child_process'
 import path from 'path'
 import fs from 'fs'
 import crypto from 'crypto'
+import os from 'os'
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
@@ -306,6 +307,101 @@ ipcMain.handle('fs:revokeUploadRequest', async (_e, token: string) => {
     const merged = { ...cfg, uploadRequests: requests }
     fs.writeFileSync(configPath(), JSON.stringify(merged, null, 2), 'utf8')
     return { ok: true }
+  } catch (err: unknown) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+})
+
+// ── Jobs: queue request/guide/return runs on the dev box ──────────────────────
+// Any Workpapers machine enqueues a job on the Worker; the always-up agent on the
+// dev box claims and runs them one at a time. Every call is auth-gated exactly
+// like the upload-request endpoints.
+function requesterId(): string {
+  const user = process.env.USERNAME || (() => { try { return os.userInfo().username } catch { return 'user' } })()
+  let host = ''
+  try { host = os.hostname() } catch { /* ignore */ }
+  return host ? `${user}@${host}` : user
+}
+
+ipcMain.handle('fs:getJobTemplates', async () => {
+  const { workerUrl, uploadSecret } = workerAuth()
+  if (!uploadSecret) return { ok: false, error: 'Not configured.' }
+  try {
+    const resp = await fetch(`${workerUrl}/job-templates`, { headers: { 'Authorization': `Bearer ${uploadSecret}` } })
+    if (!resp.ok) return { ok: false, error: `HTTP ${resp.status}` }
+    return await resp.json()
+  } catch (err: unknown) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+})
+
+ipcMain.handle('fs:saveJobTemplates', async (_e, templates: Record<string, string>) => {
+  const { workerUrl, uploadSecret } = workerAuth()
+  if (!uploadSecret) return { ok: false, error: 'Not configured.' }
+  try {
+    const resp = await fetch(`${workerUrl}/job-templates`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${uploadSecret}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(templates),
+    })
+    if (!resp.ok) return { ok: false, error: `HTTP ${resp.status}` }
+    return await resp.json()
+  } catch (err: unknown) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+})
+
+ipcMain.handle('fs:enqueueJob', async (_e, job: { process: string; prompt: string; client: string; path: string; year: string }) => {
+  const { workerUrl, uploadSecret } = workerAuth()
+  if (!uploadSecret) return { ok: false, error: 'Not configured.' }
+  try {
+    const resp = await fetch(`${workerUrl}/job`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${uploadSecret}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...job, requester: requesterId() }),
+    })
+    if (!resp.ok) { const b = await resp.text().catch(() => ''); return { ok: false, error: `HTTP ${resp.status}${b ? ': ' + b : ''}` } }
+    return await resp.json()
+  } catch (err: unknown) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+})
+
+ipcMain.handle('fs:listJobs', async () => {
+  const { workerUrl, uploadSecret } = workerAuth()
+  if (!uploadSecret) return { ok: false, error: 'Not configured.' }
+  try {
+    const resp = await fetch(`${workerUrl}/jobs`, { headers: { 'Authorization': `Bearer ${uploadSecret}` } })
+    if (!resp.ok) return { ok: false, error: `HTTP ${resp.status}` }
+    return await resp.json()
+  } catch (err: unknown) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+})
+
+ipcMain.handle('fs:cancelJob', async (_e, id: string) => {
+  const { workerUrl, uploadSecret } = workerAuth()
+  if (!uploadSecret) return { ok: false, error: 'Not configured.' }
+  try {
+    const resp = await fetch(`${workerUrl}/job/${id}/status`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${uploadSecret}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'canceled' }),
+    })
+    if (!resp.ok) { const b = await resp.text().catch(() => ''); try { return JSON.parse(b) } catch { return { ok: false, error: `HTTP ${resp.status}` } } }
+    return await resp.json()
+  } catch (err: unknown) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+})
+
+ipcMain.handle('fs:clearJob', async (_e, id: string) => {
+  const { workerUrl, uploadSecret } = workerAuth()
+  if (!uploadSecret) return { ok: false, error: 'Not configured.' }
+  try {
+    const resp = await fetch(`${workerUrl}/job/${id}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${uploadSecret}` } })
+    if (!resp.ok) return { ok: false, error: `HTTP ${resp.status}` }
+    return await resp.json()
   } catch (err: unknown) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }

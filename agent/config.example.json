@@ -1,0 +1,11 @@
+{
+  "_comment": "Copy to config.local.json (gitignored) and fill in. Env vars BW_WORKER_URL / BW_UPLOAD_SECRET override these. uploadSecret is the SAME value as the Worker's UPLOAD_SECRET (wrangler secret put UPLOAD_SECRET).",
+  "workerUrl": "https://share.bellomycpa.com",
+  "uploadSecret": "",
+  "pollSeconds": 15,
+  "repos": {
+    "request": "D:\\Projects\\request-builder",
+    "guide": "D:\\Projects\\taxguide-builder",
+    "return": "D:\\Projects\\taxguide-builder"
+  }
+}

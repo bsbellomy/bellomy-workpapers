@@ -17,6 +17,7 @@ interface TextNote  { id:string; page:number; x:number; y:number; text:string; a
 interface Annotations { tickmarks:Tickmark[]; signoffs:Signoff[]; tapeStamps?:TapeStamp[]; highlights?:Highlight[]; textNotes?:TextNote[]; addedAt?:string; addedBy?:string|null }
 interface DocFile  { name:string; type:'file';   path:string; annotations:Annotations }
 interface DocFolder{ name:string; type:'folder'; path:string; children:(DocFile|DocFolder)[] }
+interface Job { id:string; process:string; prompt:string; client:string; path:string; year:string; requester:string; status:string; note:string; agent?:string; createdAt:number; updatedAt:number; claimedAt:number|null }
 interface Bookmark { title:string; page:number|null; items:Bookmark[] }
 
 function fileExt(name:string):string { return (name.match(/\.([^.]+)$/)?.[1]??'').toLowerCase() }
@@ -92,6 +93,12 @@ const api = (window as unknown as { electronAPI?: {
   checkUploads:(token:string)=>Promise<{ok:boolean;files?:string[];label?:string;expiresAt?:number;error?:string}>
   downloadAndSaveUpload:(token:string,filename:string)=>Promise<{ok:boolean;path?:string;error?:string}>
   revokeUploadRequest:(token:string)=>Promise<{ok:boolean;error?:string}>
+  getJobTemplates:()=>Promise<{ok:boolean;templates?:Record<string,string>;error?:string}>
+  saveJobTemplates:(templates:Record<string,string>)=>Promise<{ok:boolean;templates?:Record<string,string>;error?:string}>
+  enqueueJob:(job:{process:string;prompt:string;client:string;path:string;year:string})=>Promise<{ok:boolean;id?:string;error?:string}>
+  listJobs:()=>Promise<{ok:boolean;count?:number;jobs?:Job[];error?:string}>
+  cancelJob:(id:string)=>Promise<{ok:boolean;error?:string}>
+  clearJob:(id:string)=>Promise<{ok:boolean;error?:string}>
   printFile:      (p:string)=>Promise<{ok:boolean;error?:string}>
   printBytes:     (b:ArrayBuffer)=>Promise<{ok:boolean;error?:string}>
   getVersion:      ()=>Promise<string>
@@ -1908,6 +1915,226 @@ function RequestUploadModal({folderPath,folderName,author,onClose,onCreated}:{fo
 
 // ── Upload Inbox Modal ────────────────────────────────────────────────────────
 
+// American football — lucide has no such glyph, so this matches its stroke style
+// (no fill, currentColor stroke, 24×24). A lens body with a center lace + stitches.
+function FootballIcon({size=20,style}:{size?:number;style?:React.CSSProperties}){
+  return(
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" style={style}>
+      <path d="M3 12c3-5 15-5 18 0-3 5-15 5-18 0Z"/>
+      <path d="M8.5 12h7"/>
+      <path d="M10.5 10.3v3.4M12 10v4M13.5 10.3v3.4"/>
+    </svg>
+  )
+}
+
+// The job launcher + queue. The football button opens this. It queues a request /
+// guide / return run for the selected client on the dev-box agent, and shows the
+// live queue. Prompts come from thin templates hosted on the Worker, filled with
+// the client name, folder path and tax year, and are editable per run.
+const JOB_META:Record<string,{label:string;verb:string}> = {
+  request:{label:'Document Request',verb:'Build request'},
+  guide:  {label:'Tax Prep Guide',  verb:'Build guide'},
+  return: {label:'Return Prep (RPA)',verb:'Prep return'},
+}
+function fillTemplate(tpl:string,vars:{client:string;year:string;path:string}):string{
+  return (tpl||'').replace(/\{\{client\}\}/g,vars.client).replace(/\{\{year\}\}/g,vars.year).replace(/\{\{path\}\}/g,vars.path)
+}
+function statusColor(s:string):string{
+  if(s==='running') return C.ochre
+  if(s==='done') return '#3d7a2e'
+  if(s==='error') return '#B5443A'
+  if(s==='canceled') return C.inkFaint
+  return C.inkSoft // queued
+}
+function timeAgo(ts:number):string{
+  const s=Math.max(0,Math.round((Date.now()-ts)/1000))
+  if(s<60) return s+'s ago'
+  if(s<3600) return Math.round(s/60)+'m ago'
+  if(s<86400) return Math.round(s/3600)+'h ago'
+  return Math.round(s/86400)+'d ago'
+}
+
+function JobModal({client,clientPath,onClose,onChanged}:{client:string|null;clientPath:string|null;onClose:()=>void;onChanged:()=>void}){
+  const effectiveYear=String(new Date().getFullYear()-1)
+  const [year,setYear]=useState(effectiveYear)
+  const [proc,setProc]=useState<string>('request')
+  const [templates,setTemplates]=useState<Record<string,string>>({})
+  const [prompt,setPrompt]=useState('')
+  const [dirty,setDirty]=useState(false)   // user edited the prompt away from the filled template
+  const [queuing,setQueuing]=useState(false)
+  const [savingTpl,setSavingTpl]=useState(false)
+  const [jobs,setJobs]=useState<Job[]>([])
+  const [err,setErr]=useState('')
+
+  const vars={client:client||'',year,path:clientPath||''}
+
+  const refreshJobs=useCallback(async()=>{
+    const r=await api?.listJobs()
+    if(r?.ok&&r.jobs) setJobs(r.jobs)
+    else if(r&&!r.ok&&r.error) setErr(r.error)
+  },[])
+
+  // Load templates once, then poll the queue while open.
+  useEffect(()=>{
+    let live=true
+    ;(async()=>{
+      const r=await api?.getJobTemplates()
+      if(live&&r?.ok&&r.templates) setTemplates(r.templates)
+      else if(live&&r&&!r.ok) setErr(r.error||'Could not load templates.')
+    })()
+    refreshJobs()
+    const iv=setInterval(refreshJobs,5000)
+    return()=>{live=false;clearInterval(iv)}
+  },[refreshJobs])
+
+  // Re-fill the prompt whenever the process, year or template set changes —
+  // unless the user has hand-edited it (don't stomp their client-specific notes).
+  useEffect(()=>{
+    if(dirty) return
+    setPrompt(fillTemplate(templates[proc]||'',vars))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[proc,year,templates])
+
+  async function queue(){
+    if(!client||!clientPath){setErr('Select a client first.');return}
+    if(!prompt.trim()){setErr('Prompt is empty.');return}
+    setQueuing(true);setErr('')
+    const r=await api?.enqueueJob({process:proc,prompt:prompt.trim(),client,path:clientPath,year})
+    setQueuing(false)
+    if(!r?.ok){setErr(r?.error||'Could not queue the job.');return}
+    setDirty(false)
+    setPrompt(fillTemplate(templates[proc]||'',vars))
+    await refreshJobs();onChanged()
+  }
+
+  async function saveAsDefault(){
+    // Persist the current prompt back as this process's template. Keep the
+    // placeholders the user left in; if they filled them in for this client, swap
+    // the concrete values back to placeholders so the default stays reusable.
+    setSavingTpl(true);setErr('')
+    let tpl=prompt
+    if(vars.client) tpl=tpl.split(vars.client).join('{{client}}')
+    if(vars.path)   tpl=tpl.split(vars.path).join('{{path}}')
+    if(vars.year)   tpl=tpl.split(vars.year).join('{{year}}')
+    const next={...templates,[proc]:tpl}
+    const r=await api?.saveJobTemplates(next)
+    setSavingTpl(false)
+    if(!r?.ok){setErr(r?.error||'Could not save the default.');return}
+    if(r.templates) setTemplates(r.templates)
+    setDirty(false)
+  }
+
+  async function cancelJob(id:string){
+    const r=await api?.cancelJob(id)
+    if(!r?.ok&&r?.error) setErr(r.error)
+    await refreshJobs();onChanged()
+  }
+  async function clearJob(id:string){
+    await api?.clearJob(id)
+    await refreshJobs();onChanged()
+  }
+
+  const years=[0,1,2].map(d=>String(new Date().getFullYear()-1-d))
+
+  return(
+    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{backgroundColor:'rgba(26,22,18,0.4)'}} onClick={onClose}>
+      <div className="flex flex-col rounded overflow-hidden" style={{width:640,maxHeight:'88vh',backgroundColor:C.paperLight,boxShadow:'0 8px 40px rgba(26,22,18,0.25)',border:`1px solid ${C.rule}`}} onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3" style={{backgroundColor:C.ink,color:C.paperLight}}>
+          <span className="serif" style={{fontSize:14,fontWeight:600}}>Client Jobs {client?`· ${client}`:''}</span>
+          <button onClick={onClose} style={{color:C.inkFaint,fontSize:20,lineHeight:1}}>×</button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
+          {/* New job */}
+          {!client&&<div className="sans" style={{fontSize:13,color:C.inkFaint,textAlign:'center',padding:12,backgroundColor:C.paperDeep,borderRadius:8}}>Select a client folder to queue a job.</div>}
+          {client&&(
+            <div style={{border:`1px solid ${C.rule}`,borderRadius:8,overflow:'hidden'}}>
+              <div className="px-4 py-2 sans" style={{fontSize:11,fontWeight:700,letterSpacing:.5,textTransform:'uppercase',color:C.inkFaint,backgroundColor:C.paperDeep}}>New job</div>
+              <div className="p-4 flex flex-col gap-3">
+                {/* Process picker */}
+                <div className="flex gap-2">
+                  {Object.entries(JOB_META).map(([k,m])=>(
+                    <button key={k} onClick={()=>setProc(k)} className="flex-1 px-3 py-2 rounded sans"
+                      style={{fontSize:12,fontWeight:600,cursor:'pointer',
+                        border:`1px solid ${proc===k?C.ochre:C.rule}`,
+                        backgroundColor:proc===k?C.ochreSoft:C.paper,
+                        color:proc===k?C.ochreDeep:C.inkSoft}}>{m.label}</button>
+                  ))}
+                </div>
+                {/* Year */}
+                <div className="flex items-center gap-2">
+                  <span className="sans" style={{fontSize:12,color:C.inkMuted}}>Tax year</span>
+                  <select value={year} onChange={e=>setYear(e.target.value)} className="sans"
+                    style={{fontSize:12,padding:'4px 8px',borderRadius:6,border:`1px solid ${C.rule}`,backgroundColor:C.paper,color:C.ink}}>
+                    {years.map(y=><option key={y} value={y}>{y}</option>)}
+                  </select>
+                  <span className="mono" style={{fontSize:10,color:C.inkFaint}}>→ {clientPath}</span>
+                </div>
+                {/* Prompt */}
+                <textarea value={prompt} onChange={e=>{setPrompt(e.target.value);setDirty(true)}}
+                  spellCheck={false}
+                  style={{width:'100%',minHeight:150,resize:'vertical',fontSize:12,lineHeight:1.5,padding:10,borderRadius:6,border:`1px solid ${C.rule}`,backgroundColor:C.paper,color:C.ink,fontFamily:'inherit'}}/>
+                <div className="flex items-center gap-2">
+                  <button onClick={queue} disabled={queuing} className="px-4 py-2 rounded sans"
+                    style={{fontSize:12,fontWeight:700,backgroundColor:C.ochre,color:'#fff',cursor:queuing?'default':'pointer',opacity:queuing?.6:1}}>
+                    {queuing?'Queuing…':`Queue ${JOB_META[proc].verb}`}
+                  </button>
+                  <button onClick={()=>{setDirty(false);setPrompt(fillTemplate(templates[proc]||'',vars))}}
+                    className="px-3 py-2 rounded sans" style={{fontSize:12,color:C.inkSoft,border:`1px solid ${C.rule}`,backgroundColor:C.paper}}>Reset</button>
+                  <div className="flex-1"/>
+                  <button onClick={saveAsDefault} disabled={savingTpl} title="Save this wording as the reusable default for this job type"
+                    className="px-3 py-2 rounded sans" style={{fontSize:11,color:C.inkMuted,border:`1px solid ${C.rule}`,backgroundColor:C.paper}}>
+                    {savingTpl?'Saving…':'Save as default'}
+                  </button>
+                </div>
+                {err&&<div className="sans" style={{fontSize:11,color:'#B5443A'}}>{err}</div>}
+              </div>
+            </div>
+          )}
+
+          {/* Queue */}
+          <div>
+            <div className="flex items-center justify-between px-1 pb-2">
+              <span className="sans" style={{fontSize:11,fontWeight:700,letterSpacing:.5,textTransform:'uppercase',color:C.inkFaint}}>Queue</span>
+              <button onClick={refreshJobs} className="sans" style={{fontSize:11,color:C.inkMuted,display:'flex',alignItems:'center',gap:4}}><RefreshCw size={12}/>Refresh</button>
+            </div>
+            {jobs.length===0&&<div className="sans" style={{fontSize:12,color:C.inkFaint,textAlign:'center',padding:12}}>No jobs yet.</div>}
+            <div className="flex flex-col gap-2">
+              {jobs.map(j=>(
+                <div key={j.id} className="flex items-center gap-3 px-3 py-2 rounded" style={{border:`1px solid ${C.rule}`,backgroundColor:C.paper}}>
+                  <span title={j.status} style={{width:8,height:8,borderRadius:8,backgroundColor:statusColor(j.status),flexShrink:0}}/>
+                  <div className="flex-1 min-w-0">
+                    <div className="sans truncate" style={{fontSize:12,color:C.ink}}>
+                      <span style={{fontWeight:700}}>{JOB_META[j.process]?.label||j.process}</span>
+                      <span style={{color:C.inkMuted}}> · {j.client||'—'} · {j.year}</span>
+                    </div>
+                    <div className="sans" style={{fontSize:10,color:C.inkFaint}}>
+                      <span style={{color:statusColor(j.status),fontWeight:600}}>{j.status}</span>
+                      {' · '}{j.requester||'?'}{' · '}{timeAgo(j.createdAt)}
+                      {j.note?` · ${j.note}`:''}
+                    </div>
+                  </div>
+                  {j.status==='queued'&&(
+                    <button onClick={()=>cancelJob(j.id)} className="px-2 py-1 rounded sans" style={{fontSize:11,color:'#B5443A',border:`1px solid #B5443A22`,backgroundColor:C.paper,flexShrink:0}}>Cancel</button>
+                  )}
+                  {(j.status==='done'||j.status==='error'||j.status==='canceled')&&(
+                    <button onClick={()=>clearJob(j.id)} title="Remove from list" className="px-2 py-1 rounded sans" style={{fontSize:11,color:C.inkFaint,border:`1px solid ${C.rule}`,backgroundColor:C.paper,flexShrink:0}}>Clear</button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="px-5 py-3 flex justify-end" style={{borderTop:`1px solid ${C.rule}`,backgroundColor:C.paperDeep}}>
+          <button onClick={onClose} className="px-4 py-1.5 rounded sans" style={{fontSize:12,border:`1px solid ${C.rule}`,color:C.inkSoft,backgroundColor:C.paper}}>Close</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function UploadInboxModal({onClose,onSaved}:{onClose:()=>void;onSaved:()=>void}){
   type UploadRequest={label:string;folderPath:string;url:string;createdAt:string;expiresDays:number}
   type PendingFile={token:string;filename:string;requestLabel:string}
@@ -2662,6 +2889,12 @@ export default function App(){
   const [uploadBadge,setUploadBadge]=useState(0)
   const [uploadToast,setUploadToast]=useState<string|null>(null)
   const prevBadgeRef=useRef(0)
+  const [jobModal,setJobModal]=useState(false)
+  const [jobBadge,setJobBadge]=useState(0)
+  const refreshJobBadge=useCallback(async()=>{
+    const r=await api?.listJobs()
+    if(r?.ok&&r.jobs) setJobBadge(r.jobs.filter(j=>j.status==='queued'||j.status==='running').length)
+  },[])
 
   // Poll for pending uploads every 2 minutes while the app is open
   useEffect(()=>{
@@ -2693,6 +2926,13 @@ export default function App(){
     const id=setInterval(poll,120000)
     return ()=>clearInterval(id)
   },[api])
+
+  // Poll the active job count for the football badge (every 30s while open).
+  useEffect(()=>{
+    refreshJobBadge()
+    const id=setInterval(refreshJobBadge,30000)
+    return ()=>clearInterval(id)
+  },[refreshJobBadge])
 
   async function handleCheckForUpdates(){
     setUpdateStatus({message:'Checking for updates…',type:'info'})
@@ -3366,6 +3606,11 @@ export default function App(){
               <Inbox size={20} style={{color:uploadBadge>0?C.ochre:C.inkFaint}}/>
               {uploadBadge>0&&<span style={{position:'absolute',top:2,right:2,fontSize:8,fontWeight:700,color:'#fff',lineHeight:'12px',backgroundColor:'#B5443A',borderRadius:6,padding:'0 3px',minWidth:12,textAlign:'center'}}>{uploadBadge}</span>}
             </button>
+            {/* Jobs: request / guide / return runs on the dev-box agent */}
+            <button className="tool-btn" onClick={()=>setJobModal(true)} title={selectedClient?`Client jobs — ${selectedClient}`:'Client jobs'} style={{color:C.inkFaint,padding:'5px 6px',position:'relative'}}>
+              <FootballIcon size={20} style={{color:jobBadge>0?C.ochre:C.inkFaint}}/>
+              {jobBadge>0&&<span style={{position:'absolute',top:2,right:2,fontSize:8,fontWeight:700,color:'#fff',lineHeight:'12px',backgroundColor:C.ochre,borderRadius:6,padding:'0 3px',minWidth:12,textAlign:'center'}}>{jobBadge}</span>}
+            </button>
 
             <div style={{width:1,height:18,backgroundColor:C.rule,margin:'0 4px'}}/>
 
@@ -3942,6 +4187,15 @@ export default function App(){
         <UploadInboxModal
           onClose={()=>setUploadInboxModal(false)}
           onSaved={()=>{ refreshDocsRef.current(300); setUploadBadge(b=>Math.max(0,b-1)) }}
+        />
+      )}
+
+      {jobModal&&(
+        <JobModal
+          client={selectedClient}
+          clientPath={selectedClient?rootPath.replace(/\\$/,'')+`\\${selectedClient}`:null}
+          onClose={()=>setJobModal(false)}
+          onChanged={refreshJobBadge}
         />
       )}
 
