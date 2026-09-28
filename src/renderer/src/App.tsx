@@ -4,7 +4,7 @@ import {
   ChevronRight, ChevronDown, FileSignature, ZoomIn, ZoomOut, Maximize2,
   MessageSquare, PanelRightClose, PanelRightOpen, PanelLeftClose, PanelLeftOpen,
   Clock, Layers, Settings, ScanLine, ArrowLeft, Merge, Printer,
-  RefreshCw, Trash2, Calculator, FileSpreadsheet, StickyNote, Copy, CreditCard, RotateCw, Mail, Inbox, GripVertical,
+  RefreshCw, Trash2, Calculator, FileSpreadsheet, StickyNote, Copy, CreditCard, RotateCw, Mail, Inbox, GripVertical, Rocket,
 } from 'lucide-react'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -1915,20 +1915,6 @@ function RequestUploadModal({folderPath,folderName,author,onClose,onCreated}:{fo
 
 // ── Upload Inbox Modal ────────────────────────────────────────────────────────
 
-// American football — lucide has no such glyph. Filled leather body (currentColor,
-// so it still tints with the toolbar/badge color) with cream laces across the seam.
-function FootballIcon({size=20,style}:{size?:number;style?:React.CSSProperties}){
-  return(
-    <svg width={size} height={size} viewBox="0 0 24 24" style={style}>
-      <path fill="currentColor" d="M2.6 12C6 6.6 18 6.6 21.4 12C18 17.4 6 17.4 2.6 12Z"/>
-      <g stroke={C.paperLight} strokeWidth={1.5} strokeLinecap="round" fill="none">
-        <path d="M9 12h6"/>
-        <path d="M10 10.9v2.2M12 10.6v2.8M14 10.9v2.2"/>
-      </g>
-    </svg>
-  )
-}
-
 // The job launcher + queue. The football button opens this. It queues a request /
 // guide / return run for the selected client on the dev-box agent, and shows the
 // live queue. Prompts come from thin templates hosted on the Worker, filled with
@@ -3609,7 +3595,7 @@ export default function App(){
             </button>
             {/* Jobs: request / guide / return runs on the dev-box agent */}
             <button className="tool-btn" onClick={()=>setJobModal(true)} title={selectedClient?`Client jobs — ${selectedClient}`:'Client jobs'} style={{color:C.inkFaint,padding:'5px 6px',position:'relative'}}>
-              <FootballIcon size={20} style={{color:jobBadge>0?C.ochre:C.inkFaint}}/>
+              <Rocket size={20} style={{color:jobBadge>0?C.ochre:C.inkFaint}}/>
               {jobBadge>0&&<span style={{position:'absolute',top:2,right:2,fontSize:8,fontWeight:700,color:'#fff',lineHeight:'12px',backgroundColor:C.ochre,borderRadius:6,padding:'0 3px',minWidth:12,textAlign:'center'}}>{jobBadge}</span>}
             </button>
 
