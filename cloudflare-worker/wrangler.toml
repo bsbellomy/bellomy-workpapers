@@ -15,6 +15,20 @@ crons = ["0 7 * * *"]
 binding = "LINKS_KV"
 id = "8184c23c34c940048874202c63be1a59"
 
+# Job doorbell: one Durable Object holds the dev-box agent's WebSocket so a
+# queued job reaches it in under a second. See JobNotifier in worker.js.
+[[durable_objects.bindings]]
+name = "JOB_NOTIFIER"
+class_name = "JobNotifier"
+
+# new_sqlite_classes is the current form and is required on the Workers free
+# plan. If this account is on a paid plan using legacy DO storage, swap to
+#   new_classes = ["JobNotifier"]
+# A wrong choice fails loudly at deploy; it cannot half-apply.
+[[migrations]]
+tag = "v1-job-notifier"
+new_sqlite_classes = ["JobNotifier"]
+
 [[routes]]
 pattern = "share.bellomycpa.com"
 custom_domain = true

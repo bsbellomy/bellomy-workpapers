@@ -34,12 +34,14 @@ function jsonResponse(obj, status = 200) {
 `
 const mod = await import('data:text/javascript,' + encodeURIComponent(
   preamble + block + '\n' +
-  'export { handleJobCreate, handleJobList, handleJobClaim, handleJobStatus, handleJobDelete, handleJobTemplatesGet, handleJobTemplatesSet, DEFAULT_JOB_TEMPLATES, JOB_MAX_PROMPT }'
+  'export { handleJobCreate, handleJobList, handleJobClaim, handleJobStatus, handleJobDelete, handleJobTemplatesGet, handleJobTemplatesSet, DEFAULT_JOB_TEMPLATES, JOB_MAX_PROMPT, handleJobSubToken, handleJobEvents, notifyJobQueued, jobSubToken, timingSafeEqual, JOB_WS_PROTO }'
 ))
 const {
   handleJobCreate, handleJobList, handleJobClaim, handleJobStatus,
   handleJobDelete, handleJobTemplatesGet, handleJobTemplatesSet,
   DEFAULT_JOB_TEMPLATES, JOB_MAX_PROMPT,
+  handleJobSubToken, handleJobEvents, notifyJobQueued, jobSubToken,
+  timingSafeEqual, JOB_WS_PROTO, JobNotifier,
 } = mod
 
 const SECRET = 'test-secret'
@@ -198,6 +200,168 @@ console.log('\nNo KV list() in the job paths (free-tier list cap is 1,000/day)\n
   await handleJobDelete(c.id, req('DELETE'), env)
   await handleJobTemplatesGet(req('GET'), env)
   check('create/list/claim/status/delete/templates make ZERO list() calls', listCalls === 0, `${listCalls} calls`)
+}
+
+// ── The job doorbell ─────────────────────────────────────────────────────────
+// A WebSocket that tells the agent a job exists. It must stay a DOORBELL: the
+// frame carries no prompt, client or path, so a leaked subscribe token reveals
+// nothing. Claiming still goes through the Bearer-gated claim endpoint.
+
+const wsReq = (proto, upgrade = true) => new Request('https://x/job-events', {
+  headers: {
+    ...(upgrade ? { Upgrade: 'websocket' } : {}),
+    ...(proto ? { 'Sec-WebSocket-Protocol': proto } : {}),
+  },
+})
+
+// A DO binding that records what was pushed, without a real Durable Object.
+// The subscribe arm returns a bare {status:101} object rather than a Response:
+// undici refuses to construct a 101 Response, though workerd allows it. The
+// handler passes the DO's result straight through, so this still proves the
+// request was authorised and delegated.
+function fakeNotifier() {
+  const sent = []
+  return {
+    sent,
+    idFromName: () => 'jobs',
+    get: () => ({
+      async fetch(r) {
+        if (new URL(r.url).pathname === '/broadcast') { sent.push(await r.text()); return new Response('{"ok":true}') }
+        return { status: 101, chosenProtocol: r.headers.get('X-Chosen-Protocol') }
+      },
+    }),
+  }
+}
+
+console.log('\nDoorbell — subscribe token\n' + '='.repeat(64))
+{
+  const env = makeEnv()
+  check('token endpoint refuses without the secret',
+    (await handleJobSubToken(req('GET', undefined, null), env)).status === 401)
+  check('  ...and minted nothing', env._kv.size === 0)
+
+  const first = await bodyOf(await handleJobSubToken(req('GET'), env))
+  check('mints a token with the secret', first.ok === true && typeof first.token === 'string')
+  check('token is 48 hex chars', /^[0-9a-f]{48}$/.test(first.token || ''), first.token)
+  check('returns the ready-made subprotocol', first.protocol === JOB_WS_PROTO + first.token)
+  const second = await bodyOf(await handleJobSubToken(req('GET'), env))
+  check('minting is idempotent — same token on a second call', second.token === first.token)
+}
+
+console.log('\nDoorbell — who may subscribe\n' + '='.repeat(64))
+{
+  const env = makeEnv()
+  env.JOB_NOTIFIER = fakeNotifier()
+  check('refuses before any token exists',
+    (await handleJobEvents(wsReq(JOB_WS_PROTO + 'deadbeef'), env)).status === 401)
+
+  const { token } = await bodyOf(await handleJobSubToken(req('GET'), env))
+  check('refuses a plain GET that is not an upgrade with 426',
+    (await handleJobEvents(wsReq(JOB_WS_PROTO + token, false), env)).status === 426)
+  check('refuses an upgrade with no subprotocol',
+    (await handleJobEvents(wsReq(null), env)).status === 401)
+  check('refuses a wrong token',
+    (await handleJobEvents(wsReq(JOB_WS_PROTO + 'f'.repeat(48)), env)).status === 401)
+  check('refuses a right token under the wrong prefix',
+    (await handleJobEvents(wsReq('other-' + token), env)).status === 401)
+  const ok = await handleJobEvents(wsReq(JOB_WS_PROTO + token), env)
+  check('accepts the correct subprotocol', ok.status === 101)
+  check('  ...and echoes the chosen protocol back to the client',
+    ok.chosenProtocol === JOB_WS_PROTO + token)
+  check('accepts when the agent offers several protocols',
+    (await handleJobEvents(wsReq(`some-other, ${JOB_WS_PROTO}${token}`), env)).status === 101)
+  check('the secret itself is NOT accepted as a subscribe token',
+    (await handleJobEvents(wsReq(JOB_WS_PROTO + SECRET), env)).status === 401)
+  check('timingSafeEqual rejects a length mismatch', timingSafeEqual('abc', 'abcd') === false)
+  check('timingSafeEqual matches an identical string', timingSafeEqual(token, token) === true)
+}
+
+console.log('\nDoorbell — it rings, and it says nothing else\n' + '='.repeat(64))
+{
+  const env = makeEnv()
+  env.JOB_NOTIFIER = fakeNotifier()
+  const r = await handleJobCreate(req('POST', {
+    process: 'guide', prompt: 'Build the guide for Magoon', client: 'Magoon, Steve & Ann',
+    path: 'T:\\Magoon, Steve & Ann', year: '2025',
+  }), env)
+  check('enqueue succeeds', r.status === 200)
+  check('exactly one frame was pushed', env.JOB_NOTIFIER.sent.length === 1, String(env.JOB_NOTIFIER.sent.length))
+  const frame = env.JOB_NOTIFIER.sent[0] || ''
+  const parsed = JSON.parse(frame || '{}')
+  check('the frame says only that something was queued',
+    parsed.event === 'job-queued' && typeof parsed.at === 'number' && Object.keys(parsed).length === 2, frame)
+  check('the frame leaks NO client name', !/Magoon/i.test(frame), frame)
+  check('the frame leaks NO folder path', !/T:\\\\|T:\\/.test(frame), frame)
+  check('the frame leaks NO prompt', !/Build the guide/i.test(frame), frame)
+  check('claiming still requires the secret',
+    (await handleJobClaim(req('POST', undefined, null), env)).status === 401)
+}
+
+console.log('\nDoorbell — a broken doorbell never blocks a job\n' + '='.repeat(64))
+{
+  const env = makeEnv()                       // no JOB_NOTIFIER binding at all
+  const r = await handleJobCreate(req('POST', { process: 'guide', prompt: 'x' }), env)
+  check('enqueue succeeds with the binding absent', r.status === 200)
+  check('notifyJobQueued reports false rather than throwing', (await notifyJobQueued(env)) === false)
+
+  const env2 = makeEnv()
+  env2.JOB_NOTIFIER = { idFromName: () => 'jobs', get: () => ({ fetch: async () => { throw new Error('DO down') } }) }
+  const r2 = await handleJobCreate(req('POST', { process: 'guide', prompt: 'y' }), env2)
+  check('enqueue still succeeds when the notifier throws', r2.status === 200)
+  const b2 = await bodyOf(r2)
+  const stored = JSON.parse(env2._kv.get('jobs') || '{}')
+  check('  ...and the job is durably stored anyway', !!stored[b2.id] && stored[b2.id].status === 'queued')
+  check('a claim then returns it', (await bodyOf(await handleJobClaim(req('POST', {}), env2))).job?.id === b2.id)
+}
+
+console.log('\nDoorbell — the JobNotifier object itself\n' + '='.repeat(64))
+{
+  // Exercise the real class, with a fake hibernation state.
+  const live = { sent: [] }
+  const dead = { sent: [] }
+  const sockets = [
+    { send(m) { live.sent.push(m) } },
+    { send() { throw new Error('socket already closed') } },
+    { send(m) { dead.sent.push(m) } },
+  ]
+  const state = { getWebSockets: () => sockets, acceptWebSocket() {} }
+  const dobj = new JobNotifier(state, {})
+
+  const res = await dobj.fetch(new Request('https://do/broadcast', { method: 'POST', body: '{"event":"job-queued","at":1}' }))
+  const out = JSON.parse(await res.text())
+  check('broadcast reaches every healthy socket', live.sent.length === 1 && dead.sent.length === 1)
+  check('a dead socket does not stop the rest', out.delivered === 2, JSON.stringify(out))
+  check('each socket got the doorbell frame verbatim', live.sent[0] === '{"event":"job-queued","at":1}')
+
+  const notUpgrade = await dobj.fetch(new Request('https://do/subscribe'))
+  check('the DO refuses a non-upgrade request with 426', notUpgrade.status === 426)
+
+  let ponged = null
+  await dobj.webSocketMessage({ send: m => { ponged = m } }, 'ping')
+  check('ping is answered with pong', ponged === 'pong')
+  let closedWith = null
+  await dobj.webSocketClose({ close: (c) => { closedWith = c } }, 1000)
+  check('close is passed through', closedWith === 1000)
+  await dobj.webSocketClose({ close: () => { throw new Error('already gone') } }, 1000)
+  check('closing an already-dead socket does not throw', true)
+}
+
+console.log('\nDoorbell — no new KV cost on the hot path\n' + '='.repeat(64))
+{
+  const env = makeEnv()
+  env.JOB_NOTIFIER = fakeNotifier()
+  let listCalls = 0
+  env.LINKS_KV.list = async () => { listCalls++; throw new Error('KV list() must not be called') }
+  await handleJobCreate(req('POST', { process: 'guide', prompt: 'x' }), env)
+  await handleJobClaim(req('POST', {}), env)
+  check('create + claim still make ZERO KV list() calls', listCalls === 0, `${listCalls} calls`)
+
+  // The doorbell must not turn a poll into extra reads: claim is unchanged.
+  let gets = 0
+  const realGet = env.LINKS_KV.get.bind(env.LINKS_KV)
+  env.LINKS_KV.get = async k => { gets++; return realGet(k) }
+  await handleJobClaim(req('POST', {}), env)
+  check('an empty claim is still a single KV get', gets === 1, `${gets} gets`)
 }
 
 console.log('\n' + '='.repeat(64))

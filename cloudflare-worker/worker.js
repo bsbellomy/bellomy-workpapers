@@ -140,6 +140,14 @@ export default {
       if (request.method === 'GET')  return handleJobTemplatesGet(request, env)
       if (request.method === 'POST') return handleJobTemplatesSet(request, env)
     }
+    // The agent's job doorbell. Must stay above the bare GET /:token route, or
+    // "job-events" would be read as a magic-link token.
+    if (parts[0] === 'job-events' && parts[1] === 'token' && parts.length === 2 && request.method === 'GET') {
+      return handleJobSubToken(request, env)
+    }
+    if (parts[0] === 'job-events' && parts.length === 1 && request.method === 'GET') {
+      return handleJobEvents(request, env)
+    }
 
     // ── Magic link: GET /:token — human-facing landing page (does NOT consume) ─
     // A bare GET is exactly what email security scanners (Defender Safe Links,
@@ -856,7 +864,114 @@ async function handleJobCreate(request, env) {
   const map = await readJobs(env)
   map[job.id] = job
   await writeJobs(env, map)
+  // Wake the agent immediately. A notifier problem must never fail an enqueue -
+  // the job is already durably written, and the agent's fallback poll still
+  // picks it up if the socket is down.
+  await notifyJobQueued(env)
   return jsonResponse({ ok: true, id: job.id, job })
+}
+
+// ── Job doorbell ─────────────────────────────────────────────────────────────
+// The dev-box agent holds one WebSocket here so a queued job reaches it in under
+// a second instead of on a poll interval. Deliberately a DOORBELL, NOT A
+// DELIVERY: the frame carries no prompt, client name or path - only "something
+// was queued". The agent still claims through the Bearer-gated POST /claim-job,
+// so a leaked subscribe token reveals nothing and grants nothing.
+
+const JOB_SUB_TOKEN_KEY = 'job-sub-token'
+const JOB_WS_PROTO = 'bellomy-jobs-'   // Sec-WebSocket-Protocol: bellomy-jobs-<hex>
+
+// Hex only: a subprotocol value must match RFC 6455's token charset, and hex is
+// safely inside it. Minted on first use; rotate by deleting the KV key.
+async function jobSubToken(env, { create = false } = {}) {
+  let tok = await env.LINKS_KV.get(JOB_SUB_TOKEN_KEY)
+  if (!tok && create) {
+    const b = new Uint8Array(24)
+    crypto.getRandomValues(b)
+    tok = [...b].map(x => x.toString(16).padStart(2, '0')).join('')
+    await env.LINKS_KV.put(JOB_SUB_TOKEN_KEY, tok)
+  }
+  return tok || null
+}
+
+function timingSafeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false
+  let out = 0
+  for (let i = 0; i < a.length; i++) out |= a.charCodeAt(i) ^ b.charCodeAt(i)
+  return out === 0
+}
+
+// GET /job-events/token  (Bearer) - fetch or mint the subscribe token.
+async function handleJobSubToken(request, env) {
+  if (!auth(request, env)) return new Response('Unauthorized', { status: 401 })
+  const token = await jobSubToken(env, { create: true })
+  return jsonResponse({ ok: true, token, protocol: JOB_WS_PROTO + token })
+}
+
+// GET /job-events  (WebSocket upgrade; auth rides in the subprotocol, not the URL)
+async function handleJobEvents(request, env) {
+  if (request.headers.get('Upgrade') !== 'websocket') {
+    return new Response('expected a websocket upgrade', { status: 426 })
+  }
+  const offered = (request.headers.get('Sec-WebSocket-Protocol') || '')
+    .split(',').map(s => s.trim()).filter(Boolean)
+  const want = await jobSubToken(env)
+  const chosen = offered.find(p => p.startsWith(JOB_WS_PROTO))
+  // No token minted yet => nobody may subscribe.
+  if (!want || !chosen || !timingSafeEqual(chosen.slice(JOB_WS_PROTO.length), want)) {
+    return new Response('Unauthorized', { status: 401 })
+  }
+  const id = env.JOB_NOTIFIER.idFromName('jobs')
+  return env.JOB_NOTIFIER.get(id).fetch(new Request('https://do/subscribe', {
+    headers: { Upgrade: 'websocket', 'X-Chosen-Protocol': chosen },
+  }))
+}
+
+async function notifyJobQueued(env) {
+  try {
+    if (!env.JOB_NOTIFIER) return false   // binding absent (tests, or a pre-migration deploy)
+    const id = env.JOB_NOTIFIER.idFromName('jobs')
+    await env.JOB_NOTIFIER.get(id).fetch(new Request('https://do/broadcast', {
+      method: 'POST',
+      body: JSON.stringify({ event: 'job-queued', at: Date.now() }),
+    }))
+    return true
+  } catch {
+    return false                          // never block an enqueue
+  }
+}
+
+// One global instance, named 'jobs'. WebSocket hibernation means an idle socket
+// costs nothing between events.
+export class JobNotifier {
+  constructor(state, env) { this.state = state; this.env = env }
+
+  async fetch(request) {
+    const url = new URL(request.url)
+    if (url.pathname === '/broadcast') {
+      const body = await request.text()
+      let n = 0
+      for (const ws of this.state.getWebSockets()) {
+        try { ws.send(body); n++ } catch { /* drop dead sockets */ }
+      }
+      return new Response(JSON.stringify({ ok: true, delivered: n }),
+        { headers: { 'Content-Type': 'application/json' } })
+    }
+    if (request.headers.get('Upgrade') !== 'websocket') {
+      return new Response('expected a websocket upgrade', { status: 426 })
+    }
+    const pair = new WebSocketPair()
+    this.state.acceptWebSocket(pair[1])
+    const headers = {}
+    const proto = request.headers.get('X-Chosen-Protocol')
+    if (proto) headers['Sec-WebSocket-Protocol'] = proto
+    return new Response(null, { status: 101, webSocket: pair[0], headers })
+  }
+
+  // Keepalive only; the agent never sends anything meaningful.
+  async webSocketMessage(ws, msg) { if (msg === 'ping') ws.send('pong') }
+  async webSocketClose(ws, code) { try { ws.close(code, 'bye') } catch { /* already gone */ } }
+  async webSocketError(ws) { try { ws.close(1011, 'error') } catch { /* already gone */ } }
 }
 
 async function handleJobList(request, env) {

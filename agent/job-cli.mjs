@@ -78,8 +78,17 @@ async function main() {
       out(await call('POST', `/job/${id}/status`, { status, note: noteParts.join(' ') }))
       break
     }
+    // The dispatcher subscribes to the job doorbell instead of polling. This
+    // prints the ws:// URL and the subprotocol to open; the frame it pushes is
+    // only "job-queued", so claiming still goes through the authed claim above.
+    case 'subscribe': {
+      const { workerUrl } = loadConfig()
+      const r = await call('GET', '/job-events/token')
+      out({ ok: true, url: workerUrl.replace(/^http/, 'ws') + '/job-events', protocol: r.protocol })
+      break
+    }
     default:
-      die('usage: node agent/job-cli.mjs <list|claim|get|status> ...')
+      die('usage: node agent/job-cli.mjs <list|claim|get|status|subscribe> ...')
   }
 }
 
