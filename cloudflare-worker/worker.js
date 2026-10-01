@@ -984,11 +984,23 @@ async function handleJobList(request, env) {
 // is effectively serial; picking the oldest queued keeps the queue FIFO.
 async function handleJobClaim(request, env) {
   if (!auth(request, env)) return new Response('Unauthorized', { status: 401 })
-  let agent = ''
-  try { const b = await request.json(); agent = jobFieldStr(b?.agent, 120) } catch { /* body optional */ }
+  let agent = '', only = null
+  try {
+    const b = await request.json()
+    agent = jobFieldStr(b?.agent, 120)
+    // Optional: claim only these process types. The doorbell daemon may run a
+    // `guide` unattended but must never run a `request` (client-facing) or a
+    // `return` (needs computer-use). Without this filter an unrunnable job at
+    // the head of the queue would block every runnable one behind it.
+    if (Array.isArray(b?.processes) && b.processes.length) {
+      only = b.processes.filter(p => JOB_PROCESSES.includes(p))
+      if (!only.length) return jsonResponse({ ok: false, error: 'no known process in filter' }, 400)
+    }
+  } catch { /* body optional */ }
   const map = await readJobs(env)
   const queued = Object.values(map)
     .filter(j => j.status === 'queued')
+    .filter(j => !only || only.includes(j.process))
     .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
   const job = queued[0]
   if (!job) return jsonResponse({ ok: true, job: null })   // empty poll: one get(), no write

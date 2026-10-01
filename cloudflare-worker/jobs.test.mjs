@@ -124,6 +124,41 @@ console.log('\nCreate → list → claim → done round trip\n' + '='.repeat(64)
   check('nothing left to claim once drained', claim2.job === null)
 }
 
+console.log('\nClaim filtered by process type\n' + '='.repeat(64))
+// The doorbell daemon runs unattended. It may run a `guide` (an internal
+// preparer document) but must never run a `request` (publishes a client-facing
+// worksheet) or a `return` (needs computer-use). Before the filter existed, an
+// unrunnable job at the HEAD of the queue starved every guide behind it.
+{
+  const env = makeEnv()
+  const r1 = await bodyOf(await handleJobCreate(req('POST', { process: 'request', prompt: 'client facing' }), env))
+  await new Promise(r => setTimeout(r, 2))
+  const g1 = await bodyOf(await handleJobCreate(req('POST', { process: 'guide', prompt: 'internal' }), env))
+
+  const picked = await bodyOf(await handleJobClaim(req('POST', { agent: 'daemon', processes: ['guide'] }), env))
+  check('an older request job does NOT block a guide behind it',
+        picked.job && picked.job.id === g1.id, `${picked.job && picked.job.id} vs ${g1.id}`)
+  check('  ...and the request job is left queued, untouched',
+        (await bodyOf(await handleJobList(req('GET'), env))).jobs
+          .find(j => j.id === r1.id).status === 'queued')
+
+  const none = await bodyOf(await handleJobClaim(req('POST', { processes: ['guide'] }), env))
+  check('no runnable job left means null, not the request job', none.job === null)
+
+  const any = await bodyOf(await handleJobClaim(req('POST', {}), env))
+  check('an unfiltered claim still takes the request job', any.job && any.job.id === r1.id)
+}
+
+{
+  const env = makeEnv()
+  await bodyOf(await handleJobCreate(req('POST', { process: 'guide', prompt: 'g' }), env))
+  const bad = await handleJobClaim(req('POST', { processes: ['nonsense'] }), env)
+  check('a filter naming no known process is rejected, not silently ignored', bad.status === 400)
+  const still = await bodyOf(await handleJobList(req('GET'), env))
+  check('  ...and nothing was claimed by that attempt',
+        still.jobs.every(j => j.status === 'queued'))
+}
+
 console.log('\nFIFO + single-claim\n' + '='.repeat(64))
 {
   const env = makeEnv()
