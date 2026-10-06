@@ -162,6 +162,17 @@ console.log('\nSubmit — raises the existing Workpapers badge\n' + '='.repeat(6
   check('  ...using the page-supplied text', env._r2.get(dropped[0]).body === 'MY TRANSCRIPT')
   check('  ...named after the request label', dropped[0].includes('Koller 2025 worksheet'))
   check('submit flag lands in customMetadata for the digest', env._r2.get('ws/T.json').customMetadata.submitted === '1')
+  check('  ...named "<label> - worksheet answers.txt" (stable, no timestamp)', dropped[0].endsWith(' - worksheet answers.txt'), dropped[0])
+}
+{
+  // The live Koller bug: the client submitted several times and each submit
+  // dropped a separate timestamped transcript, so four worksheet files piled up.
+  const env = makeEnv({ 'ur:T': live })
+  await handleWorksheetSave('T', post({ answers: { a: '1' }, total: 5, submitted: true, text: 'FIRST SUBMIT' }), env)
+  await handleWorksheetSave('T', post({ answers: { a: '1', b: '2' }, total: 5, submitted: true, text: 'SECOND SUBMIT' }), env)
+  const dropped = [...env._r2.keys()].filter(k => k.startsWith('ur/T/'))
+  check('re-submitting OVERWRITES one answers file, never accumulates', dropped.length === 1, dropped.join(','))
+  check('  ...keeping the latest submission', env._r2.get(dropped[0]).body === 'SECOND SUBMIT')
 }
 {
   const env = makeEnv({ 'ur:T': live })

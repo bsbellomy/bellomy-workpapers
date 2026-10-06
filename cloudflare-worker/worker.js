@@ -747,9 +747,12 @@ async function handleWorksheetSave(token, request, env) {
   // what raises the existing badge in the Workpapers app — no app change needed.
   if (submitted) {
     const text = decodeEntities(typeof body.text === 'string' && body.text ? body.text : renderTranscript(state))
-    const stamp = new Date(savedAt).toISOString().slice(0, 16).replace('T', ' ').replace(':', '')
     const base = (record.label || 'worksheet').replace(/[^a-zA-Z0-9._\-\s]/g, '_')
-    await env.MAGIC_LINKS_BUCKET.put(`ur/${token}/${base} - submitted ${stamp}.txt`, text, {
+    // STABLE name, no timestamp: a client who submits more than once (or whose
+    // page re-submits) overwrites the same object instead of dropping another
+    // copy — one worksheet, one answers file. It matches the name the app's
+    // "Save answers to folder" writes, so the two paths never make two files.
+    await env.MAGIC_LINKS_BUCKET.put(`ur/${token}/${base} - worksheet answers.txt`, text, {
       httpMetadata: { contentType: 'text/plain; charset=utf-8' },
     })
   }
