@@ -8,7 +8,7 @@ $build  = "C:\Projects\bellomy-workpapers"
 $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 
 Write-Host ""
-Write-Host "=== Bellomy Workpapers — Build Installer ===" -ForegroundColor Cyan
+Write-Host "=== Bellomy Workpapers - Build Installer ===" -ForegroundColor Cyan
 Write-Host ""
 
 # 1. Sync source files
@@ -69,18 +69,18 @@ if ($installer) {
     Write-Host ""
     Write-Host "To deploy to a staff PC:" -ForegroundColor Cyan
     Write-Host "  1. Copy the installer to their machine (USB, shared drive, Teams, etc.)"
-    Write-Host "  2. Double-click to install — no admin required for user install"
+    Write-Host "  2. Double-click to install - no admin required for user install"
     Write-Host "  3. A 'Bellomy Workpapers' shortcut appears on their Desktop and Start Menu"
     Write-Host "  4. First launch: click the gear icon to point it at Z:\"
     Write-Host ""
     Write-Host "To push an update later:"
     Write-Host "  Re-run this script, then send the new installer to staff. Installing over"
-    Write-Host "  an existing version updates it in place — settings and Z:\ path are preserved."
+    Write-Host "  an existing version updates it in place - settings and Z:\ path are preserved."
     Write-Host ""
 
     # Offer to open the folder
     $open = Read-Host "Open the output folder? (y/n)"
     if ($open -eq 'y') { explorer.exe (Split-Path $installer.FullName) }
 } else {
-    Write-Host "Installer not found — check electron-builder output above." -ForegroundColor Red
+    Write-Host "Installer not found - check electron-builder output above." -ForegroundColor Red
 }
