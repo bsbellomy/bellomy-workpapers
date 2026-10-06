@@ -28,8 +28,12 @@ The app is **Windows-only**. The scanner component (ScanHelper) targets Windows 
 bellomy-workpapers/
 ├── src/
 │   ├── main/main.ts          # Electron main process — all IPC handlers, file I/O, scan, email
+│   ├── main/annotations.ts   # Annotation sidecar store (Private\*.json) — see TaxDome notes
 │   ├── renderer/src/App.tsx  # React renderer — all UI (single large component)
 │   └── preload/preload.ts    # contextBridge — exposes main→renderer API
+├── scripts/
+│   ├── smoke.ps1             # Pre-release gate (npm run smoke)
+│   └── annotations.test.mjs  # Offline guard: sidecars stay out of Private unless earned
 ├── scanner/
 │   └── ScanHelper/           # C# .NET 8 console app (NAPS2 scan wrapper)
 │       ├── Program.cs
@@ -194,6 +198,27 @@ The built binary goes to `scanner/ScanHelper/bin/publish/` and is bundled into t
 - New client folders can take a few minutes to fully provision write access after being created in TaxDome — scans to a brand-new client folder may fail with EPERM briefly; wait and retry
 - Windows "Controlled Folder Access" (ransomware protection) can block writes to network drives — add Bellomy Workpapers as an allowed app if CFA is enabled
 
+### Everything the app writes under the root becomes a TaxDome document
+
+The workpapers root is the TaxDome drive, so **any** file the app writes under
+`<root>\<Client>\` is uploaded to that client's TaxDome documents and is visible
+to everyone in the firm. Treat a write there as publishing a document, not as
+touching a scratch file. Machine-local or throwaway state belongs in
+`%APPDATA%\bellomy-workpapers\`.
+
+Annotation sidecars (`src/main/annotations.ts`) are the one deliberate
+exception. Tickmarks, sign-offs, tape stamps, highlights, notes and "added by"
+provenance are stored as
+`<root>\<Client>\Private\<subfolder__filename>.json`, because syncing through
+TaxDome is what makes a reviewer's marks follow a workpaper from one office
+machine to another. `Private` is firm-only — clients never see it — and the app
+hides it from its own folder tree.
+
+The rule that keeps that honest: **a sidecar is written only when a document
+actually carries annotations.** Reading is side-effect-free, and clearing the
+last annotation deletes the sidecar. `scripts/annotations.test.mjs` enforces it
+and `npm run smoke` runs it, because the failure mode is silent (see below).
+
 ---
 
 ## Email integration
@@ -234,6 +259,53 @@ Unhandled .NET exceptions on background threads (exit code `3762504530` / `0xE04
 
 ### Scanner EPERM on new TaxDome folders
 New TaxDome client folders can appear writable in Explorer but reject writes for a few minutes after creation while TaxDome provisions them. Also, Windows Controlled Folder Access can block network drive writes. If a scan fails with EPERM, wait 2–3 minutes and retry; if it persists, check CFA settings.
+
+### Empty annotation sidecars uploaded to TaxDome (found 2026-10-05)
+`loadAnnotations()` wrote a 99-byte `{tickmarks:[],signoffs:[]}` placeholder the
+first time anyone opened a document. Because the root is the TaxDome drive, each
+placeholder synced up as a real TaxDome document in the client's `Private`
+folder — so simply reading a client's intake in order created one junk document
+per file (28 for MAGO6841). Nothing errored; the app hides `Private` from its own
+tree, so it was invisible from inside the app. The names
+(`Client uploaded documents__2025__<file>.pdf.json`) are the flattened document
+path, which reads at a glance like pipeline metadata written into the client's
+own folder — that is how it was finally noticed, from the TaxDome side.
+
+Fixed by moving the store into `src/main/annotations.ts` and making it write only
+when there is something to record: opening a document creates nothing, and saving
+empty annotations deletes any existing sidecar. Guarded by
+`scripts/annotations.test.mjs` (run by `npm run smoke`).
+
+Sidecars created before the fix are still in TaxDome. They are firm-only, so
+there is no client exposure, but they clutter the document list; deletion through
+the connector is permanent, so clean up from a reviewed list rather than in bulk.
+
+### Sidecar rewrites left a stale tail and lost annotations (found 2026-10-05)
+Separate bug in the same store, found while classifying the sidecars above. The
+TaxDome drive is a Dokan mount, and it does not reliably honour the truncate that
+`writeFileSync`'s mode `"w"` implies. Overwriting a sidecar with a **shorter**
+payload left the previous version's tail behind:
+
+```
+  ...  "createdAt": "2026-06-13T04:19:10.590Z" }  ]  }}      <- extra }
+  ...  "addedBy": null  }Crain"  }                           <- tail of "Lisa Crain"
+```
+
+The file is then invalid JSON, `loadAnnotations()` threw, the `catch` returned
+`{tickmarks:[],signoffs:[]}`, and the document showed **no annotations at all** —
+real highlights and tickmarks went invisible in the app with nothing reported.
+
+Fixed two ways in `src/main/annotations.ts`:
+- `writeJsonExact()` opens the fd and calls `ftruncateSync` to exactly the bytes
+  written, instead of trusting mode `"w"`. It does not use write-temp-then-rename
+  because `fs.rename`/`copyFile` both fail on this mount (see `fs:moveFile`).
+- `parseSidecar()` recovers the first complete top-level object and ignores
+  trailing garbage, so sidecars already corrupted on the drive read back and the
+  next save rewrites them cleanly.
+
+The recovery path is covered by `scripts/annotations.test.mjs` section 8. The
+truncate path cannot be reproduced on a local filesystem — local FS truncates
+correctly — so that part is asserted but not genuinely exercised.
 
 ---
 
