@@ -46,6 +46,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   downloadAndSaveUpload: (token:string, filename:string, folderPath?:string) => ipcRenderer.invoke('fs:downloadAndSaveUpload', token, filename, folderPath),
   setUploadFolder:     (token:string, folderPath:string) => ipcRenderer.invoke('fs:setUploadFolder', token, folderPath),
   getWorksheet:        (token:string) => ipcRenderer.invoke('fs:getWorksheet', token),
+  saveWorksheet:       (token:string, folderPath:string, label:string) => ipcRenderer.invoke('fs:saveWorksheet', token, folderPath, label),
   revokeUploadRequest: (token:string) => ipcRenderer.invoke('fs:revokeUploadRequest', token),
   getJobTemplates: () => ipcRenderer.invoke('fs:getJobTemplates'),
   saveJobTemplates:(templates:Record<string,string>) => ipcRenderer.invoke('fs:saveJobTemplates', templates),

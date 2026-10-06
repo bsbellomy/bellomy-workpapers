@@ -372,6 +372,50 @@ ipcMain.handle('fs:getWorksheet', async (_e, token: string) => {
   }
 })
 
+// Decode the HTML entities the worksheet page stores in its text (W&#8209;2,
+// &mdash;) so the saved transcript is clean. &amp; last, to avoid double-decode.
+function decodeHtmlEntities(s: string): string {
+  if (!s) return s
+  const named: Record<string, string> = { '&nbsp;': ' ', '&mdash;': '—', '&ndash;': '–', '&hellip;': '…', '&lsquo;': '‘', '&rsquo;': '’', '&ldquo;': '“', '&rdquo;': '”', '&quot;': '"', '&apos;': "'", '&lt;': '<', '&gt;': '>' }
+  return s
+    .replace(/&#x([0-9a-fA-F]+);/g, (_m, h) => { try { return String.fromCodePoint(parseInt(h, 16)) } catch { return '' } })
+    .replace(/&#(\d+);/g, (_m, d) => { try { return String.fromCodePoint(parseInt(d, 10)) } catch { return '' } })
+    .replace(/&(?:nbsp|mdash|ndash|hellip|lsquo|rsquo|ldquo|rdquo|quot|apos|lt|gt);/g, m => named[m])
+    .replace(/&amp;/g, '&')
+}
+
+// Save a client's worksheet answers into the destination folder as a readable
+// .txt, so the answers live in the tax folder next to the uploaded documents —
+// not just on screen. Works for an in-progress worksheet too (the worker only
+// drops its own .txt on submit). The header surfaces how many were left blank.
+ipcMain.handle('fs:saveWorksheet', async (_e, token: string, folderPath: string, label: string) => {
+  const { workerUrl } = workerAuth()
+  if (!folderPath) return { ok: false, error: 'No destination folder for this request.' }
+  const cfg = readConfig()
+  const dest = remapDrive(folderPath, (cfg.rootPath as string) || currentRootPath)
+  try {
+    const resp = await fetch(`${workerUrl}/worksheet/${token}`)
+    if (!resp.ok) return { ok: false, error: `HTTP ${resp.status}` }
+    const data = await resp.json() as { ok: boolean; error?: string; answers?: Record<string, string>; answered?: number; total?: number; submitted?: boolean; label?: string }
+    if (!data.ok) return { ok: false, error: data.error || 'Could not load answers.' }
+    const name = label || data.label || 'Worksheet'
+    const total = data.total || 0, answered = data.answered || 0, blank = Math.max(0, total - answered)
+    const lines: string[] = [
+      name,
+      `Answered ${answered} of ${total}${blank > 0 ? ` — ${blank} left blank` : ''}${data.submitted ? ' — SUBMITTED' : ' — in progress'}`,
+      `Saved ${new Date().toLocaleString()}`,
+      '',
+    ]
+    for (const [q, a] of Object.entries(data.answers || {})) lines.push(`${decodeHtmlEntities(q)}: ${decodeHtmlEntities(String(a))}`)
+    const safe = name.replace(/[^a-zA-Z0-9._\-\s]/g, '_').trim()
+    const outPath = path.join(dest, `${safe} - worksheet answers.txt`)
+    fs.writeFileSync(outPath, lines.join('\r\n'), 'utf8')
+    return { ok: true, path: outPath }
+  } catch (err: unknown) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+})
+
 // ── Jobs: queue request/guide/return runs on the dev box ──────────────────────
 // Any Workpapers machine enqueues a job on the Worker; the always-up agent on the
 // dev box claims and runs them one at a time. Every call is auth-gated exactly

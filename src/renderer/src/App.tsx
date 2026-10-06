@@ -96,6 +96,7 @@ const api = (window as unknown as { electronAPI?: {
   downloadAndSaveUpload:(token:string,filename:string,folderPath?:string)=>Promise<{ok:boolean;path?:string;error?:string}>
   setUploadFolder:(token:string,folderPath:string)=>Promise<{ok:boolean;folderPath?:string;error?:string}>
   getWorksheet:(token:string)=>Promise<{ok:boolean;answers?:Record<string,string>;answered?:number;total?:number;submitted?:boolean;label?:string;error?:string}>
+  saveWorksheet:(token:string,folderPath:string,label:string)=>Promise<{ok:boolean;path?:string;error?:string}>
   revokeUploadRequest:(token:string)=>Promise<{ok:boolean;error?:string}>
   getJobTemplates:()=>Promise<{ok:boolean;templates?:Record<string,string>;error?:string}>
   saveJobTemplates:(templates:Record<string,string>)=>Promise<{ok:boolean;templates?:Record<string,string>;error?:string}>
@@ -2135,6 +2136,8 @@ function UploadInboxModal({onClose,onSaved}:{onClose:()=>void;onSaved:()=>void})
   const [answersFor,setAnswersFor]=useState<string|null>(null)
   const [answers,setAnswers]=useState<{answered:number;total:number;submitted:boolean;answers:Record<string,string>}|null>(null)
   const [answersLoading,setAnswersLoading]=useState(false)
+  const [savingAns,setSavingAns]=useState<Set<string>>(new Set())
+  const [savedAns,setSavedAns]=useState<Set<string>>(new Set())
 
   const load=useCallback(async()=>{
     setLoading(true)
@@ -2191,6 +2194,19 @@ function UploadInboxModal({onClose,onSaved}:{onClose:()=>void;onSaved:()=>void})
     setAnswersLoading(false)
   }
 
+  // Write the worksheet answers into the tax folder as a .txt, alongside the
+  // uploaded documents. Uses the same folder (and backfill) as saving a file.
+  async function saveAnswers(req:InboxReq){
+    const folder=await ensureFolder(req); if(!folder) return
+    setSavingAns(prev=>new Set(prev).add(req.token))
+    const r=await api?.saveWorksheet(req.token,folder,req.label)
+    setSavingAns(prev=>{const n=new Set(prev);n.delete(req.token);return n})
+    if(!r?.ok){ alert('Could not save answers: '+(r?.error??'')); return }
+    onSaved()
+    setSavedAns(prev=>new Set(prev).add(req.token))
+    setTimeout(()=>setSavedAns(prev=>{const n=new Set(prev);n.delete(req.token);return n}),3000)
+  }
+
   return(
     <div className="fixed inset-0 z-50 flex items-center justify-center" style={{backgroundColor:'rgba(26,22,18,0.4)'}} onClick={onClose}>
       <div className="flex flex-col rounded overflow-hidden" style={{width:600,maxWidth:'95vw',maxHeight:'85vh',backgroundColor:C.paperLight,boxShadow:'0 8px 40px rgba(26,22,18,0.25)',border:`1px solid ${C.rule}`}} onClick={e=>e.stopPropagation()}>
@@ -2240,7 +2256,13 @@ function UploadInboxModal({onClose,onSaved}:{onClose:()=>void;onSaved:()=>void})
                     {answersLoading&&<div className="sans" style={{fontSize:11,color:C.inkFaint,padding:'8px 16px'}}>Loading answers…</div>}
                     {!answersLoading&&answers&&(
                       <div className="px-4 py-2">
-                        <div className="sans" style={{fontSize:11,color:C.inkMuted,marginBottom:6}}>Answered {answers.answered} of {answers.total}{answers.total-answers.answered>0&&<span style={{color:'#B5443A',fontWeight:600}}> · {answers.total-answers.answered} left blank</span>}</div>
+                        <div className="flex items-center justify-between gap-3" style={{marginBottom:8}}>
+                          <div className="sans" style={{fontSize:11,color:C.inkMuted}}>Answered {answers.answered} of {answers.total}{answers.total-answers.answered>0&&<span style={{color:'#B5443A',fontWeight:600}}> · {answers.total-answers.answered} left blank</span>}</div>
+                          <button onClick={()=>saveAnswers(req)} disabled={savingAns.has(req.token)}
+                            className="px-3 py-1.5 rounded sans" style={{fontSize:11,fontWeight:700,flexShrink:0,backgroundColor:savedAns.has(req.token)?'#3d7a2e':C.ochre,color:'#fff'}}>
+                            {savingAns.has(req.token)?'Saving…':savedAns.has(req.token)?'Saved ✓':'Save answers to folder'}
+                          </button>
+                        </div>
                         {Object.entries(answers.answers).length===0
                           ? <div className="sans" style={{fontSize:11,color:C.inkFaint}}>No answers recorded.</div>
                           : Object.entries(answers.answers).map(([q,a])=>(
