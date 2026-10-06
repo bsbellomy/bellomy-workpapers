@@ -2214,7 +2214,7 @@ function UploadInboxModal({onClose,onSaved}:{onClose:()=>void;onSaved:()=>void})
             const blanks=ws?Math.max(0,ws.total-ws.answered):0
             const open=answersFor===req.token
             return(
-              <div key={req.token} style={{border:`2px solid ${files.length>0?C.ochreLight:C.rule}`,borderRadius:8,overflow:'hidden'}}>
+              <div key={req.token} style={{border:`2px solid ${files.length>0?C.ochreLight:C.rule}`,borderRadius:8,overflow:'hidden',flexShrink:0}}>
                 <div className="px-4 py-3 flex items-center gap-3" style={{backgroundColor:files.length>0?C.ochreSoft:C.paperDeep}}>
                   <div className="flex-1 min-w-0">
                     <div className="sans" style={{fontSize:13,fontWeight:700,color:C.ink}}>{req.label}</div>
