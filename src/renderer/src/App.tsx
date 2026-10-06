@@ -18,6 +18,8 @@ interface Annotations { tickmarks:Tickmark[]; signoffs:Signoff[]; tapeStamps?:Ta
 interface DocFile  { name:string; type:'file';   path:string; annotations:Annotations }
 interface DocFolder{ name:string; type:'folder'; path:string; children:(DocFile|DocFolder)[] }
 interface Job { id:string; process:string; prompt:string; client:string; path:string; year:string; requester:string; status:string; note:string; agent?:string; createdAt:number; updatedAt:number; claimedAt:number|null }
+interface InboxFile { name:string; size:number; uploaded:string }
+interface InboxReq { token:string; label:string; folderPath:string; createdAt:number|null; expiresAt:number; expired:boolean; daysLeft:number; hasPage:boolean; files:InboxFile[]; worksheet:{answered:number;total:number;submitted:boolean;savedAt:number|null}|null }
 interface Bookmark { title:string; page:number|null; items:Bookmark[] }
 
 function fileExt(name:string):string { return (name.match(/\.([^.]+)$/)?.[1]??'').toLowerCase() }
@@ -89,9 +91,11 @@ const api = (window as unknown as { electronAPI?: {
   sendMagicLinks: (items:{name:string;path?:string;bytes?:ArrayBuffer;pages?:string}[],expiresDays:number)=>Promise<{ok:boolean;error?:string;results?:{name:string;url?:string;error?:string}[]}>
   openExternal:   (url:string)=>Promise<boolean>
   createUploadRequest:(label:string,instructions:string,expiresDays:number,folderPath:string)=>Promise<{ok:boolean;token?:string;url?:string;error?:string}>
-  listUploadRequests:()=>Promise<Record<string,{label:string;folderPath:string;url:string;createdAt:string;expiresDays:number}>>
+  listUploadRequests:()=>Promise<{ok:boolean;error?:string;requests:InboxReq[]}>
   checkUploads:(token:string)=>Promise<{ok:boolean;files?:string[];label?:string;expiresAt?:number;error?:string}>
-  downloadAndSaveUpload:(token:string,filename:string)=>Promise<{ok:boolean;path?:string;error?:string}>
+  downloadAndSaveUpload:(token:string,filename:string,folderPath?:string)=>Promise<{ok:boolean;path?:string;error?:string}>
+  setUploadFolder:(token:string,folderPath:string)=>Promise<{ok:boolean;folderPath?:string;error?:string}>
+  getWorksheet:(token:string)=>Promise<{ok:boolean;answers?:Record<string,string>;answered?:number;total?:number;submitted?:boolean;label?:string;error?:string}>
   revokeUploadRequest:(token:string)=>Promise<{ok:boolean;error?:string}>
   getJobTemplates:()=>Promise<{ok:boolean;templates?:Record<string,string>;error?:string}>
   saveJobTemplates:(templates:Record<string,string>)=>Promise<{ok:boolean;templates?:Record<string,string>;error?:string}>
@@ -2123,105 +2127,141 @@ function JobModal({client,clientPath,onClose,onChanged}:{client:string|null;clie
 }
 
 function UploadInboxModal({onClose,onSaved}:{onClose:()=>void;onSaved:()=>void}){
-  type UploadRequest={label:string;folderPath:string;url:string;createdAt:string;expiresDays:number}
-  type PendingFile={token:string;filename:string;requestLabel:string}
-  const [requests,setRequests]=useState<Record<string,UploadRequest>>({})
-  const [pendingFiles,setPendingFiles]=useState<PendingFile[]>([])
+  const [requests,setRequests]=useState<InboxReq[]>([])
+  const [folderPaths,setFolderPaths]=useState<Record<string,string>>({})  // token -> folder backfilled this session
   const [saving,setSaving]=useState<Set<string>>(new Set())
   const [loading,setLoading]=useState(true)
+  const [err,setErr]=useState('')
+  const [answersFor,setAnswersFor]=useState<string|null>(null)
+  const [answers,setAnswers]=useState<{answered:number;total:number;submitted:boolean;answers:Record<string,string>}|null>(null)
+  const [answersLoading,setAnswersLoading]=useState(false)
 
-  useEffect(()=>{
-    async function load(){
-      setLoading(true)
-      const reqs=await api?.listUploadRequests()??{}
-      setRequests(reqs)
-      const pending:PendingFile[]=[]
-      for(const [token,req] of Object.entries(reqs)){
-        const r=await api?.checkUploads(token)
-        if(r?.ok&&r.files) r.files.forEach(f=>pending.push({token,filename:f,requestLabel:req.label}))
-      }
-      setPendingFiles(pending)
-      setLoading(false)
-    }
-    load()
+  const load=useCallback(async()=>{
+    setLoading(true)
+    const r=await api?.listUploadRequests()
+    if(r?.ok){ setRequests(r.requests||[]); setErr('') }
+    else { setRequests([]); setErr(r?.error||'Could not reach the server.') }
+    setLoading(false)
   },[])
+  useEffect(()=>{load()},[load])
 
-  async function saveFile(pf:PendingFile){
-    setSaving(prev=>new Set(prev).add(pf.token+'/'+pf.filename))
-    const r=await api?.downloadAndSaveUpload(pf.token,pf.filename)
-    if(!r?.ok){ alert('Could not save file: '+(r?.error??'')); }
-    else{
-      setPendingFiles(prev=>prev.filter(x=>!(x.token===pf.token&&x.filename===pf.filename)))
-      onSaved()
-    }
-    setSaving(prev=>{const n=new Set(prev);n.delete(pf.token+'/'+pf.filename);return n})
+  const folderFor=(req:InboxReq)=>folderPaths[req.token]??req.folderPath
+
+  // The pre-folderPath requests have no destination on the server. Ask once, write
+  // it back so the request self-heals, and reuse it for the rest of this save.
+  async function ensureFolder(req:InboxReq):Promise<string|null>{
+    const f=folderFor(req)
+    if(f) return f
+    const picked=await api?.pickFolder()
+    if(!picked) return null
+    const res=await api?.setUploadFolder(req.token,picked)
+    if(!res?.ok){ alert('Could not set the folder: '+(res?.error??'')); return null }
+    setFolderPaths(prev=>({...prev,[req.token]:picked}))
+    return picked
+  }
+
+  async function saveOne(token:string,filename:string,folder:string){
+    const key=token+'/'+filename
+    setSaving(prev=>new Set(prev).add(key))
+    const r=await api?.downloadAndSaveUpload(token,filename,folder)
+    if(!r?.ok){ alert('Could not save file: '+(r?.error??'')) }
+    else { setRequests(prev=>prev.map(x=>x.token===token?{...x,files:x.files.filter(f=>f.name!==filename)}:x)); onSaved() }
+    setSaving(prev=>{const n=new Set(prev);n.delete(key);return n})
+  }
+  async function saveFile(req:InboxReq,filename:string){
+    const folder=await ensureFolder(req); if(folder) await saveOne(req.token,filename,folder)
+  }
+  async function saveAll(req:InboxReq){
+    const folder=await ensureFolder(req); if(!folder) return   // ask once, up front
+    for(const f of [...req.files]) await saveOne(req.token,f.name,folder)
   }
 
   async function revokeRequest(token:string){
     if(!confirm('Revoke this upload link? The client will no longer be able to upload.')) return
     await api?.revokeUploadRequest(token)
-    setRequests(prev=>{const n={...prev};delete n[token];return n})
-    setPendingFiles(prev=>prev.filter(x=>x.token!==token))
+    setRequests(prev=>prev.filter(r=>r.token!==token))
   }
 
-  // Group pending files by token so they can't mix between clients
-  const filesByToken=Object.keys(requests).reduce<Record<string,PendingFile[]>>((acc,token)=>{
-    acc[token]=pendingFiles.filter(pf=>pf.token===token)
-    return acc
-  },{})
-
-  async function saveAll(token:string){
-    for(const pf of filesByToken[token]??[]) await saveFile(pf)
+  async function toggleAnswers(token:string){
+    if(answersFor===token){ setAnswersFor(null); setAnswers(null); return }
+    setAnswersFor(token); setAnswers(null); setAnswersLoading(true)
+    const r=await api?.getWorksheet(token)
+    if(r?.ok) setAnswers({answered:r.answered??0,total:r.total??0,submitted:!!r.submitted,answers:r.answers??{}})
+    else alert('Could not load answers: '+(r?.error??''))
+    setAnswersLoading(false)
   }
 
   return(
     <div className="fixed inset-0 z-50 flex items-center justify-center" style={{backgroundColor:'rgba(26,22,18,0.4)'}} onClick={onClose}>
-      <div className="flex flex-col rounded overflow-hidden" style={{width:580,maxHeight:'85vh',backgroundColor:C.paperLight,boxShadow:'0 8px 40px rgba(26,22,18,0.25)',border:`1px solid ${C.rule}`}} onClick={e=>e.stopPropagation()}>
+      <div className="flex flex-col rounded overflow-hidden" style={{width:600,maxHeight:'85vh',backgroundColor:C.paperLight,boxShadow:'0 8px 40px rgba(26,22,18,0.25)',border:`1px solid ${C.rule}`}} onClick={e=>e.stopPropagation()}>
         <div className="flex items-center justify-between px-5 py-3" style={{backgroundColor:C.ink,color:C.paperLight}}>
           <span className="serif" style={{fontSize:14,fontWeight:600}}>Client Upload Inbox</span>
-          <button onClick={onClose} style={{color:C.inkFaint,fontSize:20,lineHeight:1}}>×</button>
+          <div className="flex items-center gap-3">
+            <button onClick={load} title="Refresh" style={{color:C.inkFaint,display:'flex',alignItems:'center'}}><RefreshCw size={14}/></button>
+            <button onClick={onClose} style={{color:C.inkFaint,fontSize:20,lineHeight:1}}>×</button>
+          </div>
         </div>
         <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
-          {loading&&<div className="sans" style={{fontSize:13,color:C.inkFaint,textAlign:'center',padding:24}}>Checking for uploads…</div>}
-          {!loading&&Object.keys(requests).length===0&&<div className="sans" style={{fontSize:13,color:C.inkFaint,textAlign:'center',padding:16}}>No active upload links.</div>}
+          {loading&&<div className="sans" style={{fontSize:13,color:C.inkFaint,textAlign:'center',padding:24}}>Loading from server…</div>}
+          {!loading&&err&&<div className="sans" style={{fontSize:12,color:'#B5443A',textAlign:'center',padding:16}}>{err}</div>}
+          {!loading&&!err&&requests.length===0&&<div className="sans" style={{fontSize:13,color:C.inkFaint,textAlign:'center',padding:16}}>No active upload requests.</div>}
 
-          {!loading&&Object.entries(requests).map(([token,req])=>{
-            const files=filesByToken[token]??[]
-            const expires=new Date(new Date(req.createdAt).getTime()+req.expiresDays*86400000)
-            const expired=Date.now()>expires.getTime()
-            const allSaving=files.every(pf=>saving.has(pf.token+'/'+pf.filename))
+          {!loading&&requests.map(req=>{
+            const files=req.files||[]
+            const expired=req.expired
+            const folder=folderFor(req)
+            const ws=req.worksheet
+            const blanks=ws?Math.max(0,ws.total-ws.answered):0
+            const open=answersFor===req.token
             return(
-              <div key={token} style={{border:`2px solid ${files.length>0?C.ochreLight:C.rule}`,borderRadius:8,overflow:'hidden'}}>
-                {/* Request header */}
+              <div key={req.token} style={{border:`2px solid ${files.length>0?C.ochreLight:C.rule}`,borderRadius:8,overflow:'hidden'}}>
                 <div className="px-4 py-3 flex items-center gap-3" style={{backgroundColor:files.length>0?C.ochreSoft:C.paperDeep}}>
                   <div className="flex-1 min-w-0">
                     <div className="sans" style={{fontSize:13,fontWeight:700,color:C.ink}}>{req.label}</div>
-                    <div className="mono truncate" style={{fontSize:10,color:C.inkFaint,marginTop:1}}>→ {req.folderPath}</div>
-                    <div className="sans" style={{fontSize:11,color:expired?'#B5443A':C.inkFaint,marginTop:1}}>{expired?'Expired':'Expires'} {expires.toLocaleDateString()}</div>
+                    <div className="mono truncate" style={{fontSize:10,color:folder?C.inkFaint:'#B5443A',marginTop:1}}>{folder?`→ ${folder}`:'→ no folder set — you’ll be asked on save'}</div>
+                    <div className="sans" style={{fontSize:11,color:expired?'#B5443A':C.inkFaint,marginTop:1}}>
+                      {expired?'Expired':`Expires in ${req.daysLeft} day${req.daysLeft===1?'':'s'}`}
+                      {ws&&<> · <span style={{color:ws.submitted?'#3d7a2e':C.ochreDeep,fontWeight:600}}>worksheet {ws.submitted?'submitted':'in progress'}</span> {ws.answered}/{ws.total}{blanks>0&&<span style={{color:'#B5443A'}}> · {blanks} blank</span>}</>}
+                    </div>
                   </div>
                   <div className="flex gap-1 flex-shrink-0">
                     {files.length>0&&(
-                      <button onClick={()=>saveAll(token)} disabled={allSaving}
-                        className="px-3 py-1.5 rounded sans" style={{fontSize:11,fontWeight:700,backgroundColor:C.ochre,color:'#fff'}}>
-                        {allSaving?'Saving…':`Save All (${files.length})`}
+                      <button onClick={()=>saveAll(req)} className="px-3 py-1.5 rounded sans" style={{fontSize:11,fontWeight:700,backgroundColor:C.ochre,color:'#fff'}}>
+                        Save All ({files.length})
                       </button>
                     )}
-                    <button onClick={()=>api?.openExternal(req.url)} className="px-2 py-1 rounded sans" style={{fontSize:11,border:`1px solid ${C.rule}`,color:C.inkSoft,backgroundColor:C.paper}}>Link</button>
-                    <button onClick={()=>revokeRequest(token)} className="px-2 py-1 rounded sans" style={{fontSize:11,color:'#B5443A',border:`1px solid #B5443A22`,backgroundColor:C.paper}}>Revoke</button>
+                    {ws&&<button onClick={()=>toggleAnswers(req.token)} className="px-2 py-1 rounded sans" style={{fontSize:11,border:`1px solid ${C.rule}`,color:open?C.ochreDeep:C.inkSoft,backgroundColor:open?C.ochreSoft:C.paper}}>Answers</button>}
+                    <button onClick={()=>revokeRequest(req.token)} className="px-2 py-1 rounded sans" style={{fontSize:11,color:'#B5443A',border:`1px solid #B5443A22`,backgroundColor:C.paper}}>Revoke</button>
                   </div>
                 </div>
-                {/* Pending files for this request only */}
+
+                {open&&(
+                  <div className="flex flex-col" style={{borderTop:`1px solid ${C.ochreLight}`,backgroundColor:C.paperLight,maxHeight:220,overflowY:'auto'}}>
+                    {answersLoading&&<div className="sans" style={{fontSize:11,color:C.inkFaint,padding:'8px 16px'}}>Loading answers…</div>}
+                    {!answersLoading&&answers&&(
+                      <div className="px-4 py-2">
+                        <div className="sans" style={{fontSize:11,color:C.inkMuted,marginBottom:6}}>Answered {answers.answered} of {answers.total}{answers.total-answers.answered>0&&<span style={{color:'#B5443A',fontWeight:600}}> · {answers.total-answers.answered} left blank</span>}</div>
+                        {Object.entries(answers.answers).length===0
+                          ? <div className="sans" style={{fontSize:11,color:C.inkFaint}}>No answers recorded.</div>
+                          : Object.entries(answers.answers).map(([q,a])=>(
+                              <div key={q} className="sans" style={{fontSize:11,color:C.ink,padding:'3px 0',borderBottom:`1px solid ${C.ruleSoft}`}}>
+                                <span style={{color:C.inkMuted}}>{q}: </span><span style={{fontWeight:600}}>{String(a)}</span>
+                              </div>
+                            ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {files.length>0&&(
                   <div className="flex flex-col" style={{borderTop:`1px solid ${C.ochreLight}`}}>
-                    {files.map(pf=>{
-                      const key=pf.token+'/'+pf.filename
+                    {files.map(f=>{
+                      const key=req.token+'/'+f.name
                       const isSaving=saving.has(key)
                       return(
                         <div key={key} className="flex items-center gap-3 px-4 py-2" style={{borderBottom:`1px solid ${C.ruleSoft}`,backgroundColor:C.paper}}>
-                          <div className="flex-1 min-w-0">
-                            <div className="sans truncate" style={{fontSize:12,color:C.ink}}>{pf.filename}</div>
-                          </div>
-                          <button onClick={()=>saveFile(pf)} disabled={isSaving}
+                          <div className="flex-1 min-w-0"><div className="sans truncate" style={{fontSize:12,color:C.ink}}>{f.name}</div></div>
+                          <button onClick={()=>saveFile(req,f.name)} disabled={isSaving}
                             className="px-3 py-1 rounded sans" style={{fontSize:11,fontWeight:600,backgroundColor:isSaving?C.paperDeep:C.ink,color:isSaving?C.inkFaint:C.paperLight,flexShrink:0}}>
                             {isSaving?'Saving…':'Save'}
                           </button>
@@ -2230,7 +2270,7 @@ function UploadInboxModal({onClose,onSaved}:{onClose:()=>void;onSaved:()=>void})
                     })}
                   </div>
                 )}
-                {files.length===0&&!expired&&(
+                {files.length===0&&!expired&&!open&&(
                   <div className="px-4 py-2 sans" style={{fontSize:11,color:C.inkFaint,backgroundColor:C.paper,borderTop:`1px solid ${C.rule}`}}>No files received yet.</div>
                 )}
               </div>
@@ -2871,8 +2911,6 @@ export default function App(){
   const [emailModal,setEmailModal]=useState<{items:EmailItem[];clientFiles:DocFile[]}|null>(null)
   const [uploadRequestModal,setUploadRequestModal]=useState<{folderPath:string;folderName:string}|null>(null)
   const [uploadInboxModal,setUploadInboxModal]=useState(false)
-  type UploadRequest={label:string;folderPath:string;url:string;createdAt:string;expiresDays:number}
-  const [uploadRequests,setUploadRequests]=useState<Record<string,UploadRequest>>({})
   const [uploadBadge,setUploadBadge]=useState(0)
   const [uploadToast,setUploadToast]=useState<string|null>(null)
   const prevBadgeRef=useRef(0)
@@ -2883,34 +2921,26 @@ export default function App(){
     if(r?.ok&&r.jobs) setJobBadge(r.jobs.filter(j=>j.status==='queued'||j.status==='running').length)
   },[])
 
-  // Poll for pending uploads every 2 minutes while the app is open
+  // Ambient badge for pending uploads. This now hits GET /inbox (one call that
+  // returns every request's files), so the per-token checkUploads loop is gone.
+  // /inbox uses a KV list, and the free-tier list cap is 1,000/day, so the cadence
+  // is deliberately slow (10 min) — the inbox modal and its Refresh button cover
+  // the on-demand case. See the worker's single-key jobs store for why list() is
+  // the operation to ration.
   useEffect(()=>{
     async function poll(){
-      const reqs=await api?.listUploadRequests()
-      if(!reqs) return
-      setUploadRequests(reqs)
-      let pending=0
-      const newLabels:string[]=[]
-      for(const [token,req] of Object.entries(reqs)){
-        const r=await api?.checkUploads(token)
-        if(r?.ok&&r.files&&r.files.length>0){
-          const prev=prevBadgeRef.current
-          if(r.files.length>0&&pending===0&&prev===0) newLabels.push(req.label)
-          pending+=r.files.length
-        }
-      }
+      const r=await api?.listUploadRequests()
+      if(!r?.ok) return
+      const pending=(r.requests||[]).reduce((n,req)=>n+(req.files?.length||0),0)
       if(pending>prevBadgeRef.current&&pending>0){
-        const names=Object.values(reqs)
-          .filter((_,i)=>newLabels.includes(Object.values(reqs)[i]?.label))
-          .map(r=>r.label)
-        setUploadToast(`📥 New document${pending>1?'s':''} received — click inbox to save`)
+        setUploadToast(`📥 New document${pending>1?'s':''} received — open the inbox to save`)
         setTimeout(()=>setUploadToast(null),8000)
       }
       prevBadgeRef.current=pending
       setUploadBadge(pending)
     }
     poll()
-    const id=setInterval(poll,120000)
+    const id=setInterval(poll,600000)   // 10 minutes
     return ()=>clearInterval(id)
   },[api])
 
@@ -4164,8 +4194,8 @@ export default function App(){
           author={author}
           onClose={()=>setUploadRequestModal(null)}
           onCreated={async()=>{
-            const reqs=await api?.listUploadRequests()??{}
-            setUploadRequests(reqs)
+            const r=await api?.listUploadRequests()
+            if(r?.ok){ const pending=(r.requests||[]).reduce((n,q)=>n+(q.files?.length||0),0); prevBadgeRef.current=pending; setUploadBadge(pending) }
           }}
         />
       )}

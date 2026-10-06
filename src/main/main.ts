@@ -199,7 +199,7 @@ ipcMain.handle('fs:createUploadRequest', async (_e, label: string, instructions:
     const resp = await fetch(`${workerUrl}/create-upload-request`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${uploadSecret}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ label, instructions, expiresDays }),
+      body: JSON.stringify({ label, instructions, expiresDays, folderPath }),
     })
     if (!resp.ok) return { ok: false, error: `HTTP ${resp.status}` }
     const { token, url } = await resp.json() as { token: string; url: string }
@@ -227,19 +227,35 @@ function remapDrive(p: string, rootPath: string): string {
 }
 
 type UploadReq = { label: string; folderPath: string; url: string; createdAt: string; expiresDays: number }
+type InboxReq = {
+  token: string; label: string; folderPath: string; createdAt: number | null; expiresAt: number
+  expired: boolean; daysLeft: number; hasPage: boolean
+  files: { name: string; size: number; uploaded: string }[]
+  worksheet: { answered: number; total: number; submitted: boolean; savedAt: number | null } | null
+}
 
-ipcMain.handle('fs:listUploadRequests', () => {
+// The inbox is the server's view of every live request (GET /inbox), so it is the
+// SAME on every machine — not this box's local config. folderPath comes from the
+// server; for the pre-folderPath requests it may be empty, so fall back to this
+// machine's local record if it happens to have one, then remap the drive letter.
+ipcMain.handle('fs:listUploadRequests', async () => {
+  const { workerUrl, uploadSecret } = workerAuth()
   const cfg = readConfig()
-  const reqs = (cfg.uploadRequests as Record<string, UploadReq>) ?? {}
   const root = (cfg.rootPath as string) || currentRootPath
-  let changed = false
-  for (const t of Object.keys(reqs)) {
-    const fixed = remapDrive(reqs[t].folderPath, root)
-    if (fixed !== reqs[t].folderPath) { reqs[t].folderPath = fixed; changed = true }
+  const localReqs = (cfg.uploadRequests as Record<string, UploadReq>) ?? {}
+  if (!uploadSecret) return { ok: false, error: 'Magic link is not configured.', requests: [] as InboxReq[] }
+  try {
+    const resp = await fetch(`${workerUrl}/inbox`, { headers: { 'Authorization': `Bearer ${uploadSecret}` } })
+    if (!resp.ok) return { ok: false, error: `HTTP ${resp.status}`, requests: [] as InboxReq[] }
+    const data = await resp.json() as { ok: boolean; requests: InboxReq[] }
+    const requests = (data.requests || []).map(r => {
+      const raw = r.folderPath || localReqs[r.token]?.folderPath || ''
+      return { ...r, folderPath: raw ? remapDrive(raw, root) : '' }
+    })
+    return { ok: true, requests }
+  } catch (err: unknown) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err), requests: [] as InboxReq[] }
   }
-  // Persist the migration so existing requests are corrected on disk (display + save)
-  if (changed) { try { fs.writeFileSync(configPath(), JSON.stringify({ ...cfg, uploadRequests: reqs }, null, 2), 'utf8') } catch { /* best effort */ } }
-  return reqs
 })
 
 ipcMain.handle('fs:checkUploads', async (_e, token: string) => {
@@ -257,13 +273,18 @@ ipcMain.handle('fs:checkUploads', async (_e, token: string) => {
   }
 })
 
-ipcMain.handle('fs:downloadAndSaveUpload', async (_e, token: string, filename: string) => {
+ipcMain.handle('fs:downloadAndSaveUpload', async (_e, token: string, filename: string, folderPath?: string) => {
   const { workerUrl, uploadSecret } = workerAuth()
   if (!uploadSecret) return { ok: false, error: 'Not configured.' }
-  type UReqs = Record<string, { label: string; folderPath: string; url: string; createdAt: string; expiresDays: number }>
   const cfg = readConfig()
-  const req = ((cfg.uploadRequests as UReqs) ?? {})[token]
-  if (!req) return { ok: false, error: 'Unknown upload request token.' }
+  const root = (cfg.rootPath as string) || currentRootPath
+  // Destination comes from the server inbox record (passed by the renderer), not a
+  // local token map — that local map is exactly why the inbox used to be
+  // machine-dependent. Fall back to a local record only if the renderer passed none.
+  const localReqs = (cfg.uploadRequests as Record<string, UploadReq>) ?? {}
+  const raw = folderPath || localReqs[token]?.folderPath || ''
+  const destFolder = raw ? remapDrive(raw, root) : ''
+  if (!destFolder) return { ok: false, error: 'No destination folder set for this request. Choose a folder and try again.' }
   try {
     const resp = await fetch(`${workerUrl}/download-upload/${token}/${encodeURIComponent(filename)}`, {
       headers: { 'Authorization': `Bearer ${uploadSecret}` },
@@ -280,7 +301,7 @@ ipcMain.handle('fs:downloadAndSaveUpload', async (_e, token: string, filename: s
       return { ok: false, error: msg }
     }
     const buf = Buffer.from(await resp.arrayBuffer())
-    const dest = path.join(remapDrive(req.folderPath, (cfg.rootPath as string) || currentRootPath), filename)
+    const dest = path.join(destFolder, filename)
     fs.writeFileSync(dest, buf)
     // Delete from R2 after saving
     fetch(`${workerUrl}/delete-upload/${token}/${encodeURIComponent(filename)}`, {
@@ -308,6 +329,44 @@ ipcMain.handle('fs:revokeUploadRequest', async (_e, token: string) => {
     const merged = { ...cfg, uploadRequests: requests }
     fs.writeFileSync(configPath(), JSON.stringify(merged, null, 2), 'utf8')
     return { ok: true }
+  } catch (err: unknown) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+})
+
+// Backfill the destination folder on a request that has none on the server (the
+// requests created before folderPath existed). The renderer calls this once, on
+// the first save, after asking which folder — then the request self-heals.
+ipcMain.handle('fs:setUploadFolder', async (_e, token: string, folderPath: string) => {
+  const { workerUrl, uploadSecret } = workerAuth()
+  if (!uploadSecret) return { ok: false, error: 'Not configured.' }
+  if (!folderPath) return { ok: false, error: 'No folder given.' }
+  try {
+    const resp = await fetch(`${workerUrl}/upload-request/${token}/folder`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${uploadSecret}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ folderPath }),
+    })
+    if (!resp.ok) { const b = await resp.text().catch(() => ''); return { ok: false, error: `HTTP ${resp.status}${b ? ': ' + b : ''}` } }
+    // Mirror into the local cache too, so this machine also resolves it offline.
+    const cfg = readConfig()
+    const reqs = (cfg.uploadRequests as Record<string, UploadReq>) ?? {}
+    if (reqs[token]) { reqs[token].folderPath = folderPath; try { fs.writeFileSync(configPath(), JSON.stringify({ ...cfg, uploadRequests: reqs }, null, 2), 'utf8') } catch { /* best effort */ } }
+    return await resp.json()
+  } catch (err: unknown) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+})
+
+// Fetch a client's worksheet answers (GET /worksheet/:token is token-gated, no
+// auth header needed). Used by the inbox "view answers" panel, which highlights
+// the questions left blank — something the submitted .txt does not surface.
+ipcMain.handle('fs:getWorksheet', async (_e, token: string) => {
+  const { workerUrl } = workerAuth()
+  try {
+    const resp = await fetch(`${workerUrl}/worksheet/${token}`)
+    if (!resp.ok) return { ok: false, error: `HTTP ${resp.status}` }
+    return await resp.json()
   } catch (err: unknown) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
