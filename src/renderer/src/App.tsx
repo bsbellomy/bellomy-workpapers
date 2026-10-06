@@ -2193,7 +2193,7 @@ function UploadInboxModal({onClose,onSaved}:{onClose:()=>void;onSaved:()=>void})
 
   return(
     <div className="fixed inset-0 z-50 flex items-center justify-center" style={{backgroundColor:'rgba(26,22,18,0.4)'}} onClick={onClose}>
-      <div className="flex flex-col rounded overflow-hidden" style={{width:600,maxHeight:'85vh',backgroundColor:C.paperLight,boxShadow:'0 8px 40px rgba(26,22,18,0.25)',border:`1px solid ${C.rule}`}} onClick={e=>e.stopPropagation()}>
+      <div className="flex flex-col rounded overflow-hidden" style={{width:600,maxWidth:'95vw',maxHeight:'85vh',backgroundColor:C.paperLight,boxShadow:'0 8px 40px rgba(26,22,18,0.25)',border:`1px solid ${C.rule}`}} onClick={e=>e.stopPropagation()}>
         <div className="flex items-center justify-between px-5 py-3" style={{backgroundColor:C.ink,color:C.paperLight}}>
           <span className="serif" style={{fontSize:14,fontWeight:600}}>Client Upload Inbox</span>
           <div className="flex items-center gap-3">
@@ -2230,8 +2230,8 @@ function UploadInboxModal({onClose,onSaved}:{onClose:()=>void;onSaved:()=>void})
                         Save All ({files.length})
                       </button>
                     )}
-                    {ws&&<button onClick={()=>toggleAnswers(req.token)} className="px-2 py-1 rounded sans" style={{fontSize:11,border:`1px solid ${C.rule}`,color:open?C.ochreDeep:C.inkSoft,backgroundColor:open?C.ochreSoft:C.paper}}>Answers</button>}
-                    <button onClick={()=>revokeRequest(req.token)} className="px-2 py-1 rounded sans" style={{fontSize:11,color:'#B5443A',border:`1px solid #B5443A22`,backgroundColor:C.paper}}>Revoke</button>
+                    {ws&&<button onClick={()=>toggleAnswers(req.token)} className="px-3 py-1.5 rounded sans" style={{fontSize:11,fontWeight:600,border:`1px solid ${open?C.ochre:C.inkFaint}`,color:open?C.ochreDeep:C.inkSoft,backgroundColor:open?C.ochreSoft:C.paperLight}}>Answers</button>}
+                    <button onClick={()=>revokeRequest(req.token)} className="px-3 py-1.5 rounded sans" style={{fontSize:11,fontWeight:600,color:'#B5443A',border:'1px solid #B5443A66',backgroundColor:'#FBEEEC'}}>Revoke</button>
                   </div>
                 </div>
 
