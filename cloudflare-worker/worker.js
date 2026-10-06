@@ -41,6 +41,7 @@ const UR_MAX_DAYS     = 90     // upload requests: hard cap
 const ML_DEFAULT_DAYS = 30     // magic links: default life (client sends)
 const ML_MAX_DAYS     = 90     // magic links: hard cap
 const SWEEP_GRACE_DAYS = 30    // extra grace after a record lapses before R2 is purged
+const UPLOAD_NAME_TRIES = 50   // " (2)".." (50)" before falling back to a timestamp
 const WS_MAX_BYTES = 262144    // worksheet autosave payload cap (256 KB). POST /worksheet/:token
                                // is unauthenticated by design — the token IS the credential —
                                // so the body must be bounded and JSON-validated before it is stored.
@@ -75,7 +76,7 @@ export default {
     }
     if (parts[0] === 'upload-request' && parts[1]) {
       const token = parts[1]
-      if (request.method === 'GET')  return handleUploadPage(token, env)
+      if (request.method === 'GET')  return handleUploadPageOrWorksheet(token, url, env)
       if (request.method === 'POST') return handleClientUpload(token, request, env)
       if (request.method === 'DELETE') return handleRevokeUploadRequest(token, request, env)
     }
@@ -343,6 +344,19 @@ async function handleCreateUploadRequest(request, env) {
   })
 }
 
+// Both pages hang off the same token, and /upload-request/<token> answers 200
+// with a bare dropbox. Hand a client that URL by mistake and they see a page
+// that works, never the questions, and nothing looks wrong to anyone. If a
+// worksheet exists for this token, it is the intended destination.
+// ?upload=1 still reaches the plain dropbox, for the rare case we want it.
+async function handleUploadPageOrWorksheet(token, url, env) {
+  if (url.searchParams.get('upload') !== '1') {
+    const page = await env.MAGIC_LINKS_BUCKET.head(`ws/${token}.html`)
+    if (page) return Response.redirect(`${url.origin}/w/${token}`, 302)
+  }
+  return handleUploadPage(token, env)
+}
+
 async function handleUploadPage(token, env) {
   const recordStr = await env.LINKS_KV.get(`ur:${token}`)
   if (!recordStr) return expiredUploadPage()
@@ -493,7 +507,7 @@ async function handleClientUpload(token, request, env) {
   if (!file) return new Response('No file', { status: 400 })
 
   const safeFileName = file.name.replace(/[^a-zA-Z0-9._\-\s]/g, '_')
-  const key = `ur/${token}/${safeFileName}`
+  const key = await freeUploadKey(token, safeFileName, env)
   await env.MAGIC_LINKS_BUCKET.put(key, file.stream(), {
     httpMetadata: { contentType: file.type || 'application/octet-stream' },
   })
@@ -502,6 +516,26 @@ async function handleClientUpload(token, request, env) {
   // handleCheckUploads, so we never maintain a separate files[] array that could
   // desync or be clobbered by concurrent uploads/saves (lost-update race).
   return new Response(JSON.stringify({ ok: true }), { headers: { 'Content-Type': 'application/json' } })
+}
+
+// Phones name every photo the same thing - image.jpg, IMG_0001.HEIC - and R2
+// put() overwrites silently, with no error on either side. A client attaching
+// nine photos ended up with one file, and the worksheet echoed all nine names
+// back at them, so it looked complete to the client AND to us. Eight documents
+// were destroyed before this was noticed. Never overwrite: find a free name.
+async function freeUploadKey(token, name, env) {
+  const first = `ur/${token}/${name}`
+  if (!(await env.MAGIC_LINKS_BUCKET.head(first))) return first
+  const dot  = name.lastIndexOf('.')
+  const stem = dot > 0 ? name.slice(0, dot) : name
+  const ext  = dot > 0 ? name.slice(dot)    : ''
+  for (let n = 2; n <= UPLOAD_NAME_TRIES; n++) {
+    const k = `ur/${token}/${stem} (${n})${ext}`
+    if (!(await env.MAGIC_LINKS_BUCKET.head(k))) return k
+  }
+  // Pathological case only. A timestamp is always free; it is ugly, but an ugly
+  // filename beats a destroyed document.
+  return `ur/${token}/${stem} (${Date.now()})${ext}`
 }
 
 async function handleCheckUploads(token, request, env) {
