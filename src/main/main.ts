@@ -5,6 +5,7 @@ import path from 'path'
 import fs from 'fs'
 import crypto from 'crypto'
 import os from 'os'
+import * as ann from './annotations'
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
@@ -468,41 +469,13 @@ ipcMain.handle('fs:openExternal', (_e, url: string) => {
   return true
 })
 
-// Annotations: Z:\[Client]\Private\[subfolder__filename].json
-function privateDir(pdfPath: string): string {
-  const rel = path.relative(currentRootPath, pdfPath)
-  const clientName = rel.split(path.sep)[0]
-  const dir = path.join(currentRootPath, clientName, 'Private')
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
-  return dir
-}
-
-function annFile(pdfPath: string): string {
-  const rel = path.relative(currentRootPath, pdfPath)
-  const parts = rel.split(path.sep)
-  const subPath = parts.slice(1).join('__')
-  return path.join(privateDir(pdfPath), subPath + '.json')
-}
-
-function loadAnnotations(pdfPath: string) {
-  try {
-    const f = annFile(pdfPath)
-    if (fs.existsSync(f)) {
-      const data = JSON.parse(fs.readFileSync(f, 'utf8'))
-      if (!data.addedAt) {
-        try { data.addedAt = fs.statSync(pdfPath).birthtime.toISOString() } catch {}
-        if (data.addedBy === undefined) data.addedBy = null
-        try { fs.writeFileSync(f, JSON.stringify(data, null, 2), 'utf8') } catch {}
-      }
-      return data
-    }
-    let addedAt: string | undefined
-    try { addedAt = fs.statSync(pdfPath).birthtime.toISOString() } catch {}
-    const fresh = { tickmarks: [], signoffs: [], addedAt, addedBy: null }
-    try { fs.writeFileSync(f, JSON.stringify(fresh, null, 2), 'utf8') } catch {}
-    return fresh
-  } catch { return { tickmarks: [], signoffs: [] } }
-}
+// Annotation sidecars live in [root]\[Client]\Private\. See annotations.ts for
+// the layout and for why a sidecar is only written when there is something to
+// record — the root is the TaxDome drive, so every sidecar is a real TaxDome
+// document.
+const annFile          = (pdfPath: string) => ann.annFile(currentRootPath, pdfPath)
+const ensurePrivateDir = (pdfPath: string) => ann.ensurePrivateDir(currentRootPath, pdfPath)
+const loadAnnotations  = (pdfPath: string) => ann.loadAnnotations(currentRootPath, pdfPath)
 
 // Sort folders/files: folders first, year folders descending, rest alphabetical
 // Parse a leading MM-DD-YYYY (1-2 digit month/day) date out of a filename,
@@ -735,10 +708,7 @@ ipcMain.handle('fs:readPdf', async (_e, filePath: string) => {
 
 // ── Save annotations ──────────────────────────────────────────────────────────
 ipcMain.handle('fs:saveAnnotations', async (_e, pdfPath: string, annotations: unknown) => {
-  try {
-    fs.writeFileSync(annFile(pdfPath), JSON.stringify(annotations, null, 2), 'utf8')
-    return true
-  } catch { return false }
+  return ann.saveAnnotations(currentRootPath, pdfPath, annotations)
 })
 
 // ── Move file (drag & drop) ───────────────────────────────────────────────────
@@ -761,6 +731,9 @@ ipcMain.handle('fs:moveFile', async (_e, srcPath: string, destFolder: string) =>
       try {
         const srcAnn = annFile(srcPath)
         if (fs.existsSync(srcAnn)) {
+          // annFile() no longer creates the folder, and the destination may be a
+          // different client whose Private folder does not exist yet.
+          ensurePrivateDir(destPath)
           const destAnn = annFile(destPath)
           execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
             `Move-Item -LiteralPath '${srcAnn.replace(/'/g,"''")}' -Destination '${destAnn.replace(/'/g,"''")}' -Force`

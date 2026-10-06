@@ -14,6 +14,7 @@ $failures = @()
 #    incomplete build (renderer/main/preload) or a scanner that didn't compile.
 $artifacts = @(
     "dist\main\main\main.js",
+    "dist\main\main\annotations.js",
     "dist\main\preload\preload.js",
     "dist\renderer\index.html",
     "scanner\ScanHelper\bin\publish\ScanHelper.exe"
@@ -73,11 +74,29 @@ if (-not (Test-Path $electron)) {
     }
 }
 
+# 4. Annotation sidecars must stay out of Private unless a document actually
+#    carries annotations. The workpapers root is the TaxDome drive, so every
+#    sidecar syncs up as a real TaxDome document -- a build that writes one on
+#    mere file-open silently litters every client's Private folder (28 junk
+#    documents for MAGO6841 before this was caught on 2026-10-05). Offline and
+#    fast; runs against dist\main, which step 1 has already verified exists.
+$annTest = "scripts\annotations.test.mjs"
+if (-not (Test-Path $annTest)) {
+    $failures += "missing test: $annTest"
+} else {
+    $annOut = & node $annTest 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $failures += "annotation sidecar check failed: $(($annOut | Out-String).Trim())"
+    } else {
+        Write-Host "  $(($annOut | Out-String).Trim())"
+    }
+}
+
 if ($failures.Count -gt 0) {
     Write-Host "smoke: FAILED"
     $failures | ForEach-Object { Write-Host "  - $_" }
     exit 1
 }
 
-Write-Host "smoke: OK (build artifacts present, scanner runs, renderer mounts)"
+Write-Host "smoke: OK (build artifacts present, scanner runs, renderer mounts, sidecars clean)"
 exit 0
