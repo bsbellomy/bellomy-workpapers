@@ -74,7 +74,12 @@ export default {
     if (parts[0] === 'create-upload-request' && request.method === 'POST') {
       return handleCreateUploadRequest(request, env)
     }
-    if (parts[0] === 'upload-request' && parts[1]) {
+    // Authed folder setter — must precede the generic block, whose POST is the
+    // unauthenticated client upload.
+    if (parts[0] === 'upload-request' && parts[1] && parts[2] === 'folder' && parts.length === 3 && request.method === 'POST') {
+      return handleSetUploadFolder(parts[1], request, env)
+    }
+    if (parts[0] === 'upload-request' && parts[1] && parts.length === 2) {
       const token = parts[1]
       if (request.method === 'GET')  return handleUploadPageOrWorksheet(token, url, env)
       if (request.method === 'POST') return handleClientUpload(token, request, env)
@@ -331,17 +336,43 @@ function landingPage(token, fileName) {
 
 async function handleCreateUploadRequest(request, env) {
   if (!auth(request, env)) return new Response('Unauthorized', { status: 401 })
-  const { label, instructions, expiresDays } = await request.json()
+  const { label, instructions, expiresDays, folderPath } = await request.json()
   const token = shortId(16)
   const days = clampDays(expiresDays, UR_DEFAULT_DAYS, UR_MAX_DAYS)
   const expiresAt = Date.now() + days * 86400000
-  await env.LINKS_KV.put(`ur:${token}`, JSON.stringify({ label, instructions, expiresAt, createdAt: Date.now(), files: [] }), {
+  // folderPath is the destination the app saves received files into. Storing it
+  // on the server (not just the creating machine's config) is what lets ANY
+  // Workpapers machine list the request and save its files — the whole point of
+  // routing the inbox through the worker. The app remaps the drive letter locally.
+  const record = { label, instructions, expiresAt, createdAt: Date.now(), files: [] }
+  if (typeof folderPath === 'string' && folderPath) record.folderPath = folderPath.slice(0, 400)
+  await env.LINKS_KV.put(`ur:${token}`, JSON.stringify(record), {
     expirationTtl: Math.ceil(days * 86400) + 3600,
   })
   const origin = new URL(request.url).origin
   return new Response(JSON.stringify({ token, url: `${origin}/upload-request/${token}`, expiresAt, expiresDays: days }), {
     headers: { 'Content-Type': 'application/json' },
   })
+}
+
+// Set (or backfill) the destination folder on an existing request. The 12 live
+// requests created before folderPath existed have none; the app writes it back
+// here the first time it saves one of their files, so each self-heals once.
+// Auth-gated: the folderPath is an internal filesystem path, never client-facing.
+async function handleSetUploadFolder(token, request, env) {
+  if (!auth(request, env)) return new Response('Unauthorized', { status: 401 })
+  let body
+  try { body = await request.json() } catch { return jsonResponse({ ok: false, error: 'invalid json' }, 400) }
+  const folderPath = typeof body.folderPath === 'string' ? body.folderPath.slice(0, 400) : ''
+  if (!folderPath) return jsonResponse({ ok: false, error: 'folderPath required' }, 400)
+  const recStr = await env.LINKS_KV.get(`ur:${token}`)
+  if (!recStr) return jsonResponse({ ok: false, error: 'not found' }, 404)
+  const rec = JSON.parse(recStr)
+  rec.folderPath = folderPath
+  // Preserve the remaining lifetime rather than resetting the 75/90-day window.
+  const ttl = Math.max(3600, Math.ceil((rec.expiresAt - Date.now()) / 1000) + 3600)
+  await env.LINKS_KV.put(`ur:${token}`, JSON.stringify(rec), { expirationTtl: ttl })
+  return jsonResponse({ ok: true, folderPath })
 }
 
 // Both pages hang off the same token, and /upload-request/<token> answers 200
@@ -715,7 +746,7 @@ async function handleWorksheetSave(token, request, env) {
   // On submit, drop a readable transcript into the FILE inbox as well. That is
   // what raises the existing badge in the Workpapers app — no app change needed.
   if (submitted) {
-    const text = typeof body.text === 'string' && body.text ? body.text : renderTranscript(state)
+    const text = decodeEntities(typeof body.text === 'string' && body.text ? body.text : renderTranscript(state))
     const stamp = new Date(savedAt).toISOString().slice(0, 16).replace('T', ' ').replace(':', '')
     const base = (record.label || 'worksheet').replace(/[^a-zA-Z0-9._\-\s]/g, '_')
     await env.MAGIC_LINKS_BUCKET.put(`ur/${token}/${base} - submitted ${stamp}.txt`, text, {
@@ -724,6 +755,26 @@ async function handleWorksheetSave(token, request, env) {
   }
 
   return jsonResponse({ ok: true, savedAt, answered, total, submitted })
+}
+
+// The worksheet page sends its transcript with HTML entities intact (e.g.
+// "Kelly's W&#8209;2", "&mdash;"), so the plain-text .txt that lands in the file
+// inbox showed raw entity codes. Decode the common named ones and any numeric
+// (&#NN; / &#xNN;) entity to real characters. &amp; is done LAST so a literal
+// "&amp;#8209;" is not double-decoded into a non-breaking hyphen.
+function decodeEntities(s) {
+  if (!s) return s
+  const named = { '&nbsp;': ' ', '&mdash;': '—', '&ndash;': '–', '&hellip;': '…',
+    '&lsquo;': '‘', '&rsquo;': '’', '&ldquo;': '“', '&rdquo;': '”',
+    '&quot;': '"', '&apos;': "'", '&lt;': '<', '&gt;': '>' }
+  return s
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => safeFromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d) => safeFromCodePoint(parseInt(d, 10)))
+    .replace(/&(?:nbsp|mdash|ndash|hellip|lsquo|rsquo|ldquo|rdquo|quot|apos|lt|gt);/g, m => named[m])
+    .replace(/&amp;/g, '&')
+}
+function safeFromCodePoint(cp) {
+  try { return (cp > 0 && cp <= 0x10FFFF) ? String.fromCodePoint(cp) : '' } catch { return '' }
 }
 
 // Fallback transcript when the page did not send its own formatted text.
@@ -800,6 +851,7 @@ async function handleInbox(request, env) {
       requests.push({
         token,
         label: rec.label || '',
+        folderPath: rec.folderPath || '',
         createdAt: rec.createdAt || null,
         expiresAt: rec.expiresAt,
         expired: now > rec.expiresAt,

@@ -22,7 +22,8 @@ const here = dirname(fileURLToPath(import.meta.url))
 const src = readFileSync(join(here, 'worker.js'), 'utf8')
 
 function grab(name) {
-  const start = src.indexOf(`async function ${name}(`)
+  let start = src.indexOf(`async function ${name}(`)
+  if (start < 0) start = src.indexOf(`function ${name}(`)
   if (start < 0) throw new Error(`could not find ${name} in worker.js`)
   // Walk braces from the first { after the signature.
   let i = src.indexOf('{', start), depth = 0
@@ -170,6 +171,93 @@ const url = s => new URL(s)
   const r = await handleUploadPageOrWorksheet('T', url('http://localhost:8787/upload-request/T'), env)
   check('redirect uses the request origin',
     r.headers.get('Location') === 'http://localhost:8787/w/T', r.headers.get('Location'))
+}
+
+// ── folderPath persistence + the entity-decoded transcript ───────────────────
+// A second harness: handleCreateUploadRequest / handleSetUploadFolder / handleInbox
+// need auth, jsonResponse, shortId, clampDays and KV, so stub the first three and
+// grab the rest from worker.js.
+const mod2 = await import('data:text/javascript,' + encodeURIComponent(
+  'const UR_DEFAULT_DAYS = 75, UR_MAX_DAYS = 90\n' +
+  'let __id = 0\n' +
+  "function shortId() { return 'tok' + (++__id) }\n" +
+  'function clampDays(v, d) { return d }\n' +
+  "function auth(request, env) { return request.headers.get('Authorization') === 'Bearer S' }\n" +
+  "function jsonResponse(o, s = 200) { return new Response(JSON.stringify(o), { status: s, headers: { 'Content-Type': 'application/json' } }) }\n" +
+  grab('handleCreateUploadRequest') + '\n' +
+  grab('handleSetUploadFolder') + '\n' +
+  grab('handleInbox') + '\n' +
+  grab('decodeEntities') + '\n' +
+  grab('safeFromCodePoint') + '\n' +
+  'export { handleCreateUploadRequest, handleSetUploadFolder, handleInbox, decodeEntities }'
+))
+const { handleCreateUploadRequest, handleSetUploadFolder, handleInbox, decodeEntities } = mod2
+
+function kvEnv(kv = {}, r2 = {}) {
+  const K = new Map(Object.entries(kv).map(([k, v]) => [k, JSON.stringify(v)]))
+  const R = new Map(Object.entries(r2))
+  return {
+    _kv: K,
+    LINKS_KV: {
+      async get(k) { return K.has(k) ? K.get(k) : null },
+      async put(k, v) { K.set(k, v) },
+      async delete(k) { K.delete(k) },
+      async list({ prefix }) { return { keys: [...K.keys()].filter(k => k.startsWith(prefix)).map(name => ({ name })), list_complete: true } },
+    },
+    MAGIC_LINKS_BUCKET: {
+      async head(k) { return R.has(k) ? { customMetadata: R.get(k).customMetadata || {} } : null },
+      async list({ prefix }) { return { objects: [...R.keys()].filter(k => k.startsWith(prefix)).map(key => ({ key, size: 1, uploaded: new Date().toISOString() })) } },
+    },
+  }
+}
+const authed = (method, body) => new Request('https://x/y', { method, headers: { Authorization: 'Bearer S' }, body: body === undefined ? undefined : JSON.stringify(body) })
+const bodyOf = async r => JSON.parse(await r.text())
+
+console.log('\nfolderPath persistence\n' + '='.repeat(64))
+{
+  const env = kvEnv()
+  const r = await bodyOf(await handleCreateUploadRequest(new Request('https://x/create-upload-request', { method: 'POST', headers: { Authorization: 'Bearer S' }, body: JSON.stringify({ label: 'Minton', instructions: 'x', folderPath: 'T:\\Minton' }) }), env))
+  const rec = JSON.parse(env._kv.get(`ur:${r.token}`))
+  check('create persists folderPath on the record', rec.folderPath === 'T:\\Minton', rec.folderPath)
+}
+{
+  const env = kvEnv()
+  await handleCreateUploadRequest(new Request('https://x/create', { method: 'POST', headers: { Authorization: 'Bearer S' }, body: JSON.stringify({ label: 'NoPath' }) }), env)
+  const rec = JSON.parse([...env._kv.values()][0])
+  check('create without folderPath stores none (not undefined string)', !('folderPath' in rec), JSON.stringify(rec))
+}
+
+console.log('\nhandleSetUploadFolder — backfill\n' + '='.repeat(64))
+{
+  const env = kvEnv({ 'ur:T': { label: 'Legacy', expiresAt: Date.now() + 1e9, createdAt: Date.now() } })
+  check('setter refuses without auth', (await handleSetUploadFolder('T', new Request('https://x', { method: 'POST', body: '{}' }), env)).status === 401)
+  const r = await handleSetUploadFolder('T', authed('POST', { folderPath: 'T:\\Backfilled' }), env)
+  check('setter returns ok', (await bodyOf(r)).ok === true)
+  check('  ...and writes folderPath onto the existing record', JSON.parse(env._kv.get('ur:T')).folderPath === 'T:\\Backfilled')
+  check('setter 400s on empty folderPath', (await handleSetUploadFolder('T', authed('POST', { folderPath: '' }), env)).status === 400)
+  check('setter 404s on unknown token', (await handleSetUploadFolder('NOPE', authed('POST', { folderPath: 'x' }), env)).status === 404)
+}
+
+console.log('\nhandleInbox returns folderPath (and "" when absent)\n' + '='.repeat(64))
+{
+  const env = kvEnv({
+    'ur:A': { label: 'HasPath', folderPath: 'T:\\A', expiresAt: Date.now() + 1e9, createdAt: 2 },
+    'ur:B': { label: 'NoPath', expiresAt: Date.now() + 1e9, createdAt: 1 },
+  })
+  check('inbox refuses without auth', (await handleInbox(new Request('https://x/inbox'), env)).status === 401)
+  const b = await bodyOf(await handleInbox(authed('GET'), env))
+  const A = b.requests.find(r => r.token === 'A'), B = b.requests.find(r => r.token === 'B')
+  check('request with a folderPath reports it', A.folderPath === 'T:\\A', A.folderPath)
+  check('request without one reports empty string, not undefined', B.folderPath === '', JSON.stringify(B.folderPath))
+}
+
+console.log('\ndecodeEntities — the submitted .txt no longer shows raw entities\n' + '='.repeat(64))
+{
+  check("W&#8209;2 and &#39; decode", decodeEntities('Kelly&#39;s W&#8209;2') === "Kelly's W\u20112", decodeEntities('Kelly&#39;s W&#8209;2'))
+  check('&mdash; decodes', decodeEntities('a &mdash; b') === 'a \u2014 b')
+  check('&amp; is decoded last (no double-decode)', decodeEntities('AT&amp;#38;T') === 'AT&#38;T')
+  check('&amp;#8209; stays a literal entity, not a hyphen', decodeEntities('x &amp;#8209; y') === 'x &#8209; y')
+  check('plain text passes through', decodeEntities('nothing to do') === 'nothing to do')
 }
 
 console.log('\n' + '='.repeat(64))
