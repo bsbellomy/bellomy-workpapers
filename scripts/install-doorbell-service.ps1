@@ -37,7 +37,7 @@ $NodeMajor = [int]((& $NodeExe --version) -replace '^v(\d+).*', '$1')
 if ($NodeMajor -lt 22) { throw "node $NodeMajor is too old; the daemon needs a global WebSocket (node >= 22)" }
 
 if (-not (Test-Path "$RepoDir\agent\config.local.json")) {
-    throw "Missing agent\config.local.json — the daemon needs workerUrl + uploadSecret."
+    throw "Missing agent\config.local.json - the daemon needs workerUrl + uploadSecret."
 }
 
 $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
