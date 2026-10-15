@@ -93,3 +93,25 @@ npx wrangler deploy
 
 Jobs self-expire from the queue after 30 days; finished jobs can be cleared from the
 app's Queue list.
+
+## Job prompt templates live in KV, not in the repo
+
+`GET`/`POST /job-templates` reads and writes the **saved** templates in KV; the worker serves
+`{ ...DEFAULT_JOB_TEMPLATES, ...saved }`, so a saved key shadows the code default. Only `guide`
+is customised today — `request` and `return` match `DEFAULT_JOB_TEMPLATES` byte for byte.
+
+**`POST /job-templates` reads the process keys from the BODY ROOT**, not from a `templates`
+wrapper:
+
+```jsonc
+{ "guide": "..." }              // correct
+{ "templates": { "guide": "..." } }   // WRONG - every key is ignored, `t` ends up {},
+                                      // and KV is overwritten with an empty object
+```
+
+`handleJobTemplatesSet` loops `for (const k of JOB_PROCESSES) if (typeof body[k] === 'string')`,
+so the wrong shape still returns `{ok: true}` while silently wiping the saved templates — it
+happened on 2026-10-15 and the only copy left was inside an already-rendered job prompt.
+
+`job-template-guide.txt` in this folder is a checked-in copy of the live `guide` template so that
+can never be the only copy again. **If you edit the template in the app, refresh this file.**

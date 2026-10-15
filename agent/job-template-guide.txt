@@ -1,0 +1,40 @@
+Build the tax preparation guide (data-entry tearsheet) for {{client}} for tax year {{year}}.
+Their Workpapers folder is {{path}}.
+Resolve the client's TaxFlowID yourself (taxdome-api / the clients folder) — do not ask for it.
+
+Read .claude/skills/tax-tearsheet/SKILL.md in full, everything in its references/ folder, and the
+memory index, BEFORE touching anything.
+
+NON-NEGOTIABLES
+
+1) START AND FINISH. Do not stop to ask questions and do not stop for a judgment call — make the call, flag it, keep going, and list every flag at the end. If you hit a genuine blocker (a system is down, a document cannot be read), say so plainly and immediately. Never invent or estimate a figure to keep moving.
+
+2) FORMAT: copy the skeleton of the most recent guide that passes audit_guide.py — currently clients/MOIX6034/2025/tearsheet/00 - Moix 2025 Tax Preparation Guide.html. Copy its masthead markup and CSS tokens verbatim. Do not rebuild the format from any written description, including this one. Inject tools/guide_runtime.js; never retype it.
+
+3) SECTION ORDER: exactly as references/ordering.md defines it. Income subtotals must foot to the 1040 lines they feed.
+
+4) Every Schedule C, E, F and 4835 maps its totals to the schedule's own line numbers. ANY
+   aggregate of two or more figures must show every component that went into it.  I don't need things like the individual transactions in dividends or interest figures broken down, just mulitple totals that are aggregated into a bigger total.
+
+5) Every K-1 box with an amount gets its own row, in code order. You do not choose what to omit.
+
+6) Itemized deductions always render Medical → Taxes → Mortgage interest → Charitable, in that order, on every client even when a category is empty, each with its individual transactions and a subtotal.
+
+7) Render the PRIOR-YEAR REVIEW section: every prior-year payer and carryover, with its 20xx status.
+
+8) The guide's storage KEY must contain this client's own TaxFlowID.
+
+9) Build it with a committed build_guide.py and make_data.py. Never hand-edit the HTML.
+
+DONE MEANS: splits + the "00 - <Name> 20xx Tax Preparation Guide.html" uploaded to
+Client uploaded documents/{{year}}, originals moved to Private/20xx, and BOTH
+`python tools/audit_intake.py clients/<ID>/20xx` and `python tools/audit_guide.py clients/<ID>/20xx` exit 0. 
+
+Write clients/<ID>/20xx/FINDINGS.md before you report done — REQUIRED on every job.
+It is a LOCAL file; do NOT upload it to TaxDome. It is for whoever reviews the job, not
+whoever keys the return: the identity block, the intake line (gates, cross-foots,
+reconciliations), the two or three things that actually decide the return with what each is
+worth in tax, every flag with its figures, the tape against the prior year, and the chase list
+in priority order. Take every figure from a constant in build_guide.py so it cannot drift from
+the guide. See the FINDINGS.md section of the tax-tearsheet skill.
+Then list your flags.
