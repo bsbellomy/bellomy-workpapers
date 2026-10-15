@@ -177,10 +177,20 @@ function runHeadless(job) {
   ].join('\n')
 
   return new Promise(resolve => {
-    const child = spawn(CLAUDE, ['-p', prompt, '--permission-mode', 'acceptEdits'], {
+    // THE PROMPT GOES ON STDIN, NEVER ON THE COMMAND LINE.
+    // With shell:true Node does not escape args, it concatenates them into a cmd.exe line
+    // (that is what DEP0190 warns about). cmd then split this prompt on whitespace and -p
+    // received only its first word, "You" — job J0hwoq4wiVSi, 2026-10-15. The prompt also
+    // carries newlines and cmd metacharacters: a client named "Brande N & Jared" supplies
+    // the & on its own, and the "<one-line result>" placeholders above supply < and >.
+    // cmd caps a command line at 8191 chars too. stdin has none of those limits.
+    const child = spawn(CLAUDE, ['-p', '--permission-mode', 'acceptEdits'], {
       cwd, shell: true, windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, BW_HEADLESS: '1' },
     })
+    child.stdin.on('error', () => {})        // the child can exit before the write drains
+    child.stdin.end(prompt)
     child.stdout.on('data', d => log('  | ' + String(d).trimEnd()))
     child.stderr.on('data', d => log('  ! ' + String(d).trimEnd()))
     child.on('error', e => { log('spawn failed:', e.message); resolve(-1) })
