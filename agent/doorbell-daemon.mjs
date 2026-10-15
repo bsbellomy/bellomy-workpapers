@@ -184,7 +184,13 @@ function runHeadless(job) {
     // carries newlines and cmd metacharacters: a client named "Brande N & Jared" supplies
     // the & on its own, and the "<one-line result>" placeholders above supply < and >.
     // cmd caps a command line at 8191 chars too. stdin has none of those limits.
-    const child = spawn(CLAUDE, ['-p', '--permission-mode', 'acceptEdits'], {
+    // bypassPermissions, not acceptEdits (Billy, 2026-10-15). acceptEdits auto-approves file
+    // EDITS only; Bash, the TaxDome connector and anything outside cwd still prompt, and in an
+    // unattended run nobody can answer. Job J0hwoq4wiVSi died exactly there: it read the skill,
+    // resolved the client, then could not run python, node, curl or the T: drive, and could not
+    // even report its own status. What keeps this bounded is AUTO_RUN above — only `guide` ever
+    // runs with nobody watching, and it runs in taxguide-builder.
+    const child = spawn(CLAUDE, ['-p', '--permission-mode', 'bypassPermissions'], {
       cwd, shell: true, windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, BW_HEADLESS: '1' },
