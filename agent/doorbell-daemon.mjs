@@ -10,10 +10,21 @@
 // fallback poll woke up — that is what cost a real job 10.8 minutes. A service
 // survives restarts, reboots and crashes; NSSM restarts it if it dies.
 //
-// WHAT IT MAY RUN (Billy, 2026-10-01)
+// WHAT IT MAY RUN (Billy, 2026-10-01; `cut` added 2026-10-30)
 //   guide    -> run headless, end to end. The deliverable is an INTERNAL
 //               preparer document, so a bad one costs review time, not client
 //               trust.
+//   cut      -> run headless, end to end, INCLUDING the TaxDome upload and the
+//               archive of the originals into Private/<year>. Billy decided this
+//               explicitly on 2026-10-30 after being shown that it differs from
+//               `guide`: a cut writes into the client's own `Client uploaded
+//               documents/<year>` folder and MOVES their originals, so unlike a
+//               guide it IS client-visible. He wanted pickup within seconds and
+//               accepted that. The mitigations are the phase-1 gate (which must
+//               exit 0 before the upload) and the fact that the archive MOVES
+//               documents rather than deleting them, keeping their TaxDome id,
+//               upload timestamp and creator.
+//               A finished cut makes the Worker queue the matching `guide`.
 //   request  -> NEVER run unattended. It publishes a client-facing worksheet
 //               link. Leave it queued and say so; a human starts it.
 //   return   -> NEVER run headless. The UltraTax RPA needs computer-use, which
@@ -41,9 +52,10 @@ const SWEEP_MS = 10 * 60e3   // backstop only, for a frame missed during a recon
 const BACKOFF = [1000, 2000, 5000, 10000, 20000, 30000]
 
 // Which process types this daemon may run with nobody watching.
-const AUTO_RUN = new Set(['guide'])
+const AUTO_RUN = new Set(['guide', 'cut'])
 const REPO_FOR = {
   guide: 'D:\\Projects\\taxguide-builder',
+  cut: 'D:\\Projects\\taxguide-builder',
   request: 'D:\\Projects\\request-builder',
   return: 'D:\\Projects\\taxguide-builder',
 }

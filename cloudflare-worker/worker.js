@@ -882,7 +882,14 @@ async function handleInbox(request, env) {
 // a finished queue cleans itself.
 const JOB_TTL_DAYS  = 30
 const JOB_MAX_PROMPT = 8192
-const JOB_PROCESSES = ['request', 'guide', 'return']
+// Pipeline order. `cut` was added 2026-10-30 when Billy split the tearsheet pipeline into
+// two independent processes: CUT reads the intake, splits/renames/organises it and uploads
+// the split set; GUIDE later RE-READS the same pages at 300-400 DPI and builds the guide.
+// They are deliberately NOT one job — a guide built from the cut's own read has its
+// cross-foots comparing the guide against that read, which is how a Theisen entry plan
+// passed 13 of 13 checks with ~$31k missing from both sides. See
+// D:\Projects\taxguide-builder\ORIENTATION.md section 1.
+const JOB_PROCESSES = ['request', 'cut', 'guide', 'return']
 const JOB_STATUSES  = ['queued', 'running', 'done', 'error', 'canceled']
 
 // Thin default templates. The real logic lives in each Claude skill; these just
@@ -893,9 +900,16 @@ const DEFAULT_JOB_TEMPLATES = {
   request: `Build the "things we still need" document request for {{client}} for tax year {{year}}.
 Their Workpapers folder is {{path}}.
 Follow the tax-preprep skill end to end: review what we already have, produce PRE-PREP.md and the hosted worksheet, then create and publish the upload request. Resolve the client's TaxFlowID yourself (taxdome-api / clients folder) — do not ask for it.`,
+  cut: `Run the CUT process for {{client}} for tax year {{year}} — cut, rename and organise the intake. Do NOT build the guide.
+Their Workpapers folder is {{path}}.
+Follow the tax-tearsheet skill's CUT half (pipeline steps 1 to 3b): fetch every document in the TaxDome year folder, READ EVERY PAGE, build extracted/page_ledger.json as you read, split one file per unique tax document, record one headline figure per document in extracted/intake_figures.json, and write INTAKE-NOTES.md with anything you noticed that the guide process must act on.
+The gate is \`python tools/audit_intake.py clients/<ID>/{{year}} --phase 1\` and it must exit 0 before you upload. Then upload the split set and archive the originals into Private/{{year}}.
+STOP THERE. The guide is a separate job and it is queued automatically when this one reports done. Do not read figures forward into it — the guide RE-READS the pages independently, and that second read is the only correctness check this pipeline has.
+Resolve the client's TaxFlowID yourself (taxdome-api / clients folder) — do not ask for it.`,
   guide: `Build the tax preparation guide (data-entry tearsheet) for {{client}} for tax year {{year}}.
 Their Workpapers folder is {{path}}.
-Follow the tax-tearsheet skill. Resolve the client's TaxFlowID yourself (taxdome-api / clients folder) — do not ask for it.`,
+Follow the tax-tearsheet skill. The CUT process has already split and uploaded the documents, so take ONLY the document inventory from it — which documents exist, their numbering, which source page each came from. Take NO FIGURE from page_ledger.json or intake_figures.json: RE-READ every figure you publish from the page images at 300-400 DPI, record them in extracted/guide_figures.json, and the phase-2 gate will diff your read against the cut's. A disagreement is never a rounding question.
+Resolve the client's TaxFlowID yourself (taxdome-api / clients folder) — do not ask for it.`,
   return: `Prepare the {{year}} tax return for {{client}} in UltraTax.
 Their Workpapers folder is {{path}}.
 Follow the ultratax-robot skill, driving UltraTax from the client's data.json. Resolve the client's TaxFlowID yourself (taxdome-api / clients folder) — do not ask for it.`,
@@ -1120,8 +1134,63 @@ async function handleJobStatus(id, request, env) {
   if (typeof body.note === 'string') job.note = body.note.slice(0, 500)
   job.updatedAt = Date.now()
   map[id] = job
+
+  // CUT -> GUIDE chaining (Billy, 2026-10-30: guides run as a batch after the cuts).
+  // A finished cut enqueues the guide for the same client and year. The queue already
+  // drains serially one-at-a-time, so this gives the batch behaviour with no scheduler
+  // and no new concept — and a guide can never start before its cut is done and gated.
+  let chained = null
+  if (job.process === 'cut' && status === 'done') {
+    chained = await chainGuideAfterCut(env, map, job)
+  }
+
   await writeJobs(env, map)
-  return jsonResponse({ ok: true, job })
+  // Only ring the doorbell once the chained job is durably written, or the daemon can
+  // wake, read a map that does not contain it yet and stand down. KV is eventually
+  // consistent; the daemon re-looks for exactly this reason, but do not rely on it.
+  if (chained) await notifyJobQueued(env)
+  return jsonResponse({ ok: true, job, chained })
+}
+
+// Queue the guide that follows a completed cut. Returns the new job, or null with the
+// reason logged into the cut's note when it is deliberately skipped.
+async function chainGuideAfterCut(env, map, cut) {
+  // Don't duplicate: if a guide for this client+year is already queued or running (or
+  // already finished), the chain has nothing to add. A re-reported `done` on the same cut
+  // must not enqueue a second guide.
+  const dup = Object.values(map).find(j =>
+    j.process === 'guide' && j.client === cut.client && j.year === cut.year &&
+    (j.status === 'queued' || j.status === 'running' || j.status === 'done'))
+  if (dup) return null
+
+  // Use the CURRENT guide template from KV, not the compiled-in default, so an edit made
+  // in the app popup is honoured by the chain too.
+  let tpl = DEFAULT_JOB_TEMPLATES.guide
+  try {
+    const s = await env.LINKS_KV.get('job-templates')
+    if (s) {
+      const saved = JSON.parse(s)
+      if (saved && typeof saved.guide === 'string' && saved.guide.trim()) tpl = saved.guide
+    }
+  } catch { /* fall back to the default template */ }
+
+  const prompt = tpl
+    .replace(/\{\{client\}\}/g, cut.client || '')
+    .replace(/\{\{year\}\}/g, cut.year || '')
+    .replace(/\{\{path\}\}/g, cut.path || '')
+    .slice(0, JOB_MAX_PROMPT)
+  if (!prompt.trim()) return null
+
+  const now = Date.now()
+  const guide = {
+    id: shortId(12), process: 'guide', prompt,
+    client: cut.client, path: cut.path, year: cut.year,
+    requester: `chained from cut ${cut.id}`,
+    status: 'queued', note: `queued automatically when cut ${cut.id} finished`,
+    agent: '', createdAt: now, updatedAt: now, claimedAt: null,
+  }
+  map[guide.id] = guide
+  return guide
 }
 
 async function handleJobDelete(id, request, env) {

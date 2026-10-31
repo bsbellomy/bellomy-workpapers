@@ -1,6 +1,6 @@
 ---
 name: run-next-job
-description: Claim and run the next queued Bellomy Workpapers job on this box - a document request (tax-preprep), a tax prep guide (tax-tearsheet), or a return prep (ultratax-robot / UltraTax RPA). Use when Billy says run the next job, run the job queue, drain the queue, or start the job someone queued from Workpapers. Must run in the DESKTOP app so computer-use is available for the RPA.
+description: Claim and run the next queued Bellomy Workpapers job on this box - a document request (tax-preprep), a CUT of the intake files (tax-tearsheet, cut half), a tax prep guide (tax-tearsheet, guide half), or a return prep (ultratax-robot / UltraTax RPA). Use when Billy says run the next job, run the job queue, drain the queue, or start the job someone queued from Workpapers. Must run in the DESKTOP app so computer-use is available for the RPA.
 ---
 
 # Run the next Workpapers job
@@ -34,7 +34,8 @@ The process skills live in specific repos, so switch this session's working dire
 | process | repo | skill the prompt will name |
 |---------|------|----------------------------|
 | `request` | `D:\Projects\request-builder` | `tax-preprep` |
-| `guide` | `D:\Projects\taxguide-builder` | `tax-tearsheet` |
+| `cut` | `D:\Projects\taxguide-builder` | `tax-tearsheet` (its CUT half) |
+| `guide` | `D:\Projects\taxguide-builder` | `tax-tearsheet` (its GUIDE half) |
 | `return` | `D:\Projects\taxguide-builder` | `ultratax-robot` |
 
 Use the change-directory capability (`change_directory`) to set the working directory to that
@@ -48,9 +49,21 @@ path, and which skill to follow. Load and obey that skill end to end:
 
 - **request** -> the `tax-preprep` skill: review what's on hand, produce PRE-PREP.md + the hosted
   worksheet, publish the upload request.
-- **guide** -> the `tax-tearsheet` skill: build the data-entry tearsheet.
+- **cut** -> the `tax-tearsheet` skill, **CUT half only** (its pipeline steps 1-3b): read every
+  page, split one file per unique tax document, write `page_ledger.json`, `intake_figures.json`
+  and `INTAKE-NOTES.md`, pass `audit_intake.py --phase 1`, upload the split set, archive the
+  originals. **Then STOP — do not build the guide.** The Worker queues the guide automatically
+  when this job reports `done`.
+- **guide** -> the `tax-tearsheet` skill, **GUIDE half**: build the data-entry tearsheet. Take only
+  the document *inventory* from the cut and **RE-READ every figure you publish at 300-400 DPI**.
+  Taking a figure from the cut's ledger collapses two independent reads into one and makes the
+  guide's own cross-foots meaningless - see `taxguide-builder\ORIENTATION.md` section 1.
 - **return** -> the `ultratax-robot` skill: **read its `RULES.md` FIRST**, back up the client, then
   drive UltraTax with the computer-use tools. This is the one that needs the desktop app.
+
+**Billy, 2026-10-30: cut and guide are two INDEPENDENT processes, not two phases of one job.**
+If you were handed a `cut`, you are not building a guide in this session, however convenient it
+looks to carry on while the pages are fresh.
 
 Resolve the client's TaxFlowID yourself (taxdome-api / the repo's `clients` folder) - the job
 carries only the client *name* and T: path.

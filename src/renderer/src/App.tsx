@@ -1924,8 +1924,12 @@ function RequestUploadModal({folderPath,folderName,author,onClose,onCreated}:{fo
 // guide / return run for the selected client on the dev-box agent, and shows the
 // live queue. Prompts come from thin templates hosted on the Worker, filled with
 // the client name, folder path and tax year, and are editable per run.
+// Pipeline order. `cut` splits/renames/organises the intake and uploads the split set;
+// `guide` then RE-READS those pages independently and builds the tearsheet. A finished cut
+// makes the Worker queue its own guide, so picking Cut here gets you both, in order.
 const JOB_META:Record<string,{label:string;verb:string}> = {
   request:{label:'Document Request',verb:'Build request'},
+  cut:    {label:'Cut & Organize',  verb:'Cut files'},
   guide:  {label:'Tax Prep Guide',  verb:'Build guide'},
   return: {label:'Return Prep (RPA)',verb:'Prep return'},
 }

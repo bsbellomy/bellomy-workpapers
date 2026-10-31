@@ -399,6 +399,97 @@ console.log('\nDoorbell — no new KV cost on the hot path\n' + '='.repeat(64))
   check('an empty claim is still a single KV get', gets === 1, `${gets} gets`)
 }
 
+console.log('\nCUT process, and the cut -> guide chain\n' + '='.repeat(64))
+{
+  // Billy, 2026-10-30: the tearsheet pipeline is two independent processes. A finished
+  // CUT queues the GUIDE for the same client and year, which is how "guides as a batch
+  // after the cuts" works with no scheduler. These checks matter more than most in this
+  // file: a chained job runs UNATTENDED, and a cut writes into the client's own TaxDome
+  // folder, so a chain that fires twice or fires for the wrong client is client-visible.
+  const env = makeEnv()
+  check('cut is an accepted process',
+    (await handleJobCreate(req('POST', { process: 'cut', prompt: 'x', client: 'Koller', year: '2025' }), env)).status === 200)
+  check('there is a default cut template', typeof DEFAULT_JOB_TEMPLATES.cut === 'string' && DEFAULT_JOB_TEMPLATES.cut.length > 0)
+  check('the cut template tells the session NOT to build the guide',
+    /do not build the guide/i.test(DEFAULT_JOB_TEMPLATES.cut || ''))
+  check('the guide template says RE-READ rather than trust the cut',
+    /re-?read/i.test(DEFAULT_JOB_TEMPLATES.guide || '') && /no figure/i.test(DEFAULT_JOB_TEMPLATES.guide || ''))
+}
+{
+  const env = makeEnv()
+  const cut = (await bodyOf(await handleJobCreate(req('POST',
+    { process: 'cut', prompt: 'cut it', client: 'Koller', year: '2025', path: 'P:/Koller' }), env))).job
+  await handleJobClaim(req('POST', { agent: 'a', processes: ['cut'] }), env)
+
+  const done = await bodyOf(await handleJobStatus(cut.id, req('POST', { status: 'done', note: 'cut ok' }), env))
+  check('a finished cut reports a chained job', !!done.chained)
+  check('  ...and it is a guide job', done.chained && done.chained.process === 'guide')
+  check('  ...queued, so the doorbell picks it up', done.chained && done.chained.status === 'queued')
+  check('  ...for the same client', done.chained && done.chained.client === 'Koller')
+  check('  ...the same year', done.chained && done.chained.year === '2025')
+  check('  ...and the same path', done.chained && done.chained.path === 'P:/Koller')
+  check('  ...and it says where it came from', done.chained && /cut/.test(done.chained.requester || ''))
+
+  const { jobs } = await bodyOf(await handleJobList(req('GET'), env))
+  check('the queue now holds exactly two jobs', jobs.length === 2, `${jobs.length}`)
+  check('the cut itself is still done', jobs.find(j => j.id === cut.id).status === 'done')
+
+  // A re-reported `done` must not enqueue a second guide. The daemon reports status and
+  // so does the session it spawned, so a double report is a real possibility.
+  const again = await bodyOf(await handleJobStatus(cut.id, req('POST', { status: 'done' }), env))
+  check('re-reporting done does NOT chain a second guide', !again.chained)
+  check('  ...and the queue is still two jobs',
+    (await bodyOf(await handleJobList(req('GET'), env))).jobs.length === 2)
+}
+{
+  // A cut that FAILED must not queue a guide to build off a half-finished split set.
+  const env = makeEnv()
+  const cut = (await bodyOf(await handleJobCreate(req('POST',
+    { process: 'cut', prompt: 'x', client: 'Banks', year: '2025' }), env))).job
+  await handleJobClaim(req('POST', { agent: 'a', processes: ['cut'] }), env)
+  const errd = await bodyOf(await handleJobStatus(cut.id, req('POST', { status: 'error', note: 'gate failed' }), env))
+  check('a cut that ERRORS chains nothing', !errd.chained)
+  check('  ...and the queue holds only the failed cut',
+    (await bodyOf(await handleJobList(req('GET'), env))).jobs.length === 1)
+}
+{
+  // Only a cut chains, or a finished guide would queue another guide forever.
+  const env = makeEnv()
+  const g = (await bodyOf(await handleJobCreate(req('POST',
+    { process: 'guide', prompt: 'x', client: 'Patton', year: '2025' }), env))).job
+  await handleJobClaim(req('POST', { agent: 'a', processes: ['guide'] }), env)
+  const done = await bodyOf(await handleJobStatus(g.id, req('POST', { status: 'done' }), env))
+  check('a finished GUIDE chains nothing', !done.chained)
+  check('  ...so the queue cannot feed itself',
+    (await bodyOf(await handleJobList(req('GET'), env))).jobs.length === 1)
+}
+{
+  // The chain must honour a guide template edited in the app popup, not the compiled default.
+  const env = makeEnv()
+  await handleJobTemplatesSet(req('POST', { guide: 'CUSTOM guide for {{client}} {{year}}' }), env)
+  const cut = (await bodyOf(await handleJobCreate(req('POST',
+    { process: 'cut', prompt: 'x', client: 'Galbraith', year: '2025' }), env))).job
+  await handleJobClaim(req('POST', { agent: 'a', processes: ['cut'] }), env)
+  const done = await bodyOf(await handleJobStatus(cut.id, req('POST', { status: 'done' }), env))
+  check('the chained guide uses the SAVED template',
+    done.chained && done.chained.prompt === 'CUSTOM guide for Galbraith 2025')
+}
+{
+  // An existing guide for the same client+year means the chain has nothing to add.
+  const env = makeEnv()
+  await handleJobCreate(req('POST', { process: 'guide', prompt: 'already here', client: 'Koller', year: '2025' }), env)
+  const cut = (await bodyOf(await handleJobCreate(req('POST',
+    { process: 'cut', prompt: 'x', client: 'Koller', year: '2025' }), env))).job
+  await handleJobClaim(req('POST', { agent: 'a', processes: ['cut'] }), env)
+  const done = await bodyOf(await handleJobStatus(cut.id, req('POST', { status: 'done' }), env))
+  check('no duplicate when a guide for that client+year already exists', !done.chained)
+  const cut24 = (await bodyOf(await handleJobCreate(req('POST',
+    { process: 'cut', prompt: 'x', client: 'Koller', year: '2024' }), env))).job
+  await handleJobClaim(req('POST', { agent: 'a', processes: ['cut'] }), env)
+  const d24 = await bodyOf(await handleJobStatus(cut24.id, req('POST', { status: 'done' }), env))
+  check('  ...but a different YEAR still chains', !!d24.chained && d24.chained.year === '2024')
+}
+
 console.log('\n' + '='.repeat(64))
 console.log(fail === 0 ? `ALL ${pass} CHECKS PASSED` : `${pass} passed, ${fail} FAILED`)
 process.exit(fail === 0 ? 0 : 1)
