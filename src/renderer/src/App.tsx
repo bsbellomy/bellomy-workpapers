@@ -1955,7 +1955,7 @@ function timeAgo(ts:number):string{
 function JobModal({client,clientPath,onClose,onChanged}:{client:string|null;clientPath:string|null;onClose:()=>void;onChanged:()=>void}){
   const effectiveYear=String(new Date().getFullYear()-1)
   const [year,setYear]=useState(effectiveYear)
-  const [proc,setProc]=useState<string>('request')
+  const [proc,setProc]=useState<string>('cut')
   const [templates,setTemplates]=useState<Record<string,string>>({})
   const [prompt,setPrompt]=useState('')
   const [dirty,setDirty]=useState(false)   // user edited the prompt away from the filled template
