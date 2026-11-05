@@ -1,10 +1,11 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, safeStorage, nativeImage } from 'electron'
 import { autoUpdater } from 'electron-updater'
-import { spawn } from 'child_process'
+import { spawn, execFile } from 'child_process'
 import path from 'path'
 import fs from 'fs'
 import crypto from 'crypto'
 import os from 'os'
+import { pathToFileURL } from 'url'
 import * as ann from './annotations'
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
@@ -1073,8 +1074,14 @@ ipcMain.handle('fs:savePdf', async (_e, filePath: string, bytes: ArrayBuffer) =>
 })
 
 // ── Print file (full doc) ─────────────────────────────────────────────────────
-ipcMain.handle('fs:printFile', async (_e, filePath: string) => {
-  const { execFile } = await import('child_process')
+// Printing a PDF has three layers, tried in order, so a machine that lacks a
+// print-verb association (Allen, 2026-11-04: "No application is associated with the
+// specified file") still prints:
+//   1. Start-Process -Verb Print — the user's own PDF app. Works where configured;
+//      unchanged, so no machine that prints today regresses.
+//   2. Chromium via a hidden BrowserWindow — needs no file association at all.
+//   3. Open the PDF in the default app so the user can Ctrl+P it themselves.
+function startProcessPrint(filePath: string): Promise<{ ok: boolean; error?: string }> {
   return new Promise(resolve => {
     const script = `Start-Process -FilePath '${filePath.replace(/'/g,"''")}' -Verb Print`
     execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], (err, _out, stderr) => {
@@ -1082,21 +1089,53 @@ ipcMain.handle('fs:printFile', async (_e, filePath: string) => {
       else resolve({ ok: true })
     })
   })
-})
+}
+
+function electronPrintPdf(filePath: string): Promise<{ ok: boolean; error?: string }> {
+  return new Promise(resolve => {
+    // Shown (not hidden): a print dialog attached to a hidden window can fail to
+    // surface and hang. A brief Chromium window with the PDF + print dialog is fine.
+    let win: BrowserWindow | null = new BrowserWindow({ show: true, width: 900, height: 700, title: 'Print', webPreferences: { sandbox: false } })
+    let settled = false
+    const done = (r: { ok: boolean; error?: string }) => {
+      if (settled) return
+      settled = true
+      try { win?.destroy() } catch { /* already gone */ }
+      win = null
+      resolve(r)
+    }
+    win.webContents.once('did-finish-load', () => {
+      // Give Chromium's PDF viewer a moment to lay out before invoking print.
+      setTimeout(() => {
+        win?.webContents.print({ silent: false, printBackground: true }, (success, reason) => {
+          done(success ? { ok: true } : { ok: false, error: reason || 'Printing was canceled.' })
+        })
+      }, 700)
+    })
+    win.webContents.once('did-fail-load', (_e, _code, desc) => done({ ok: false, error: `Could not open the PDF to print: ${desc}` }))
+    win.loadURL(pathToFileURL(filePath).toString()).catch((e: unknown) => done({ ok: false, error: String(e) }))
+    setTimeout(() => done({ ok: false, error: 'Print timed out.' }), 60000)
+  })
+}
+
+async function printPdf(filePath: string): Promise<{ ok: boolean; error?: string }> {
+  const viaVerb = await startProcessPrint(filePath)
+  if (viaVerb.ok) return viaVerb
+  const viaChromium = await electronPrintPdf(filePath)
+  if (viaChromium.ok) return viaChromium
+  // Last resort: open it so the user can print manually, and say so.
+  try { await shell.openPath(filePath) } catch { /* best effort */ }
+  return { ok: false, error: 'Could not print directly on this PC. The file was opened — press Ctrl+P to print it.' }
+}
+
+ipcMain.handle('fs:printFile', async (_e, filePath: string) => printPdf(filePath))
 
 // ── Print bytes (single page) — write temp file and print ─────────────────────
 ipcMain.handle('fs:printBytes', async (_e, bytes: ArrayBuffer) => {
-  const { execFile } = await import('child_process')
   const tmpPath = path.join(app.getPath('temp'), `bellomy-print-${Date.now()}.pdf`)
   try {
     fs.writeFileSync(tmpPath, Buffer.from(bytes))
-    return new Promise<{ok:boolean;error?:string}>(resolve => {
-      const script = `Start-Process -FilePath '${tmpPath.replace(/'/g,"''")}' -Verb Print`
-      execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], (err, _out, stderr) => {
-        if (err || stderr.trim()) resolve({ ok: false, error: stderr.trim() || String(err) })
-        else resolve({ ok: true })
-      })
-    })
+    return await printPdf(tmpPath)
   } catch (e: unknown) { return { ok: false, error: String(e) } }
 })
 
