@@ -218,12 +218,25 @@ ipcMain.handle('fs:createUploadRequest', async (_e, label: string, instructions:
 })
 
 // Upload-request folderPaths bake in whatever drive letter was current when the
-// request was created. TaxDome can remap the drive (e.g. Z: -> T:), so rewrite
-// the drive letter of any stored path to the client root's CURRENT drive.
+// request was created. A path on a different drive than the client root can mean
+// two very different things:
+//   (a) TaxDome re-lettered its drive (Z: -> T:) and this stored path still names
+//       the OLD letter — it must be re-lettered to the current root drive; or
+//   (b) the user deliberately picked a folder on another, real drive — e.g. Google
+//       Drive mounted at G: — and it must be left exactly as chosen.
+// Blindly re-lettering broke (b): a G:\My Drive\... pick became T:\My Drive\...,
+// which does not exist, and the save failed with ENOENT. Tell the cases apart by
+// what actually resolves: keep the path when it exists; only re-letter when it does
+// not but the re-lettered path does.
 function remapDrive(p: string, rootPath: string): string {
   const rd = (rootPath.match(/^[A-Za-z]:/) || [])[0]
   const pd = (p.match(/^[A-Za-z]:/) || [])[0]
-  if (rd && pd && rd.toUpperCase() !== pd.toUpperCase()) return rd + p.slice(pd.length)
+  if (!rd || !pd || rd.toUpperCase() === pd.toUpperCase()) return p
+  try {
+    if (fs.existsSync(p)) return p                         // (b) real folder on another drive — keep it
+    const remapped = rd + p.slice(pd.length)
+    if (fs.existsSync(remapped)) return remapped           // (a) old drive letter, tree now under the root drive
+  } catch { /* fall through and trust the original */ }
   return p
 }
 
